@@ -1,0 +1,208 @@
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+scalar Upload
+scalar Time
+
+type Query {
+  # Authentication
+  me: User!
+  
+  # Files & Folders
+  files(folderId: ID, limit: Int, offset: Int): FileConnection!
+  file(id: ID!): File!
+  folders(parentId: ID): [Folder!]!
+  
+  # Download
+  downloadFile(id: ID!): DownloadInfo!
+  
+  # Public file access (no authentication required)
+  publicFile(shareToken: String!): File!
+  publicDownload(shareToken: String!): DownloadInfo!
+  
+  # Admin-only queries (requires ADMIN role)
+  adminAllFiles(limit: Int, offset: Int): AdminFileConnection!
+  adminAllUsers(limit: Int, offset: Int): AdminUserConnection!
+  adminStats: AdminStats!
+  adminUserFiles(userId: ID!, limit: Int, offset: Int): FileConnection!
+  
+  # Quota
+  quotaUsage: QuotaInfo!
+}
+
+type Mutation {
+  # Authentication
+  login(email: String!, password: String!): AuthResponse!
+  register(input: RegisterInput!): AuthResponse!
+  
+  # Folder Operations
+  createFolder(name: String!, parentId: ID): Folder!
+  
+  # File Operations
+  requestUpload(input: UploadRequestInput!): UploadResponse!
+  confirmUpload(uploadId: ID!): File!
+  deleteFile(id: ID!): DeleteResponse!
+  toggleFileVisibility(id: ID!): File!
+  generateShareLink(fileID: String!, expiresIn: Int): ShareLinkResponse!
+  updateFile(id: ID!, input: UpdateFileInput!): File!
+  
+  # Admin-only mutations (requires ADMIN role)
+  adminDeleteFile(fileId: ID!): DeleteResponse!
+  adminToggleUserStatus(userId: ID!): User!
+  adminUpdateUserQuota(userId: ID!, newQuota: Int!): User!
+}
+
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  role: String!
+  quotaUsed: Int!
+  quotaLimit: Int!
+  isActive: Boolean!
+  createdAt: Time!
+}
+
+type File {
+  id: ID!
+  filename: String!
+  originalFilename: String!
+  size: Int!
+  mimeType: String!
+  isPublic: Boolean!
+  description: String
+  tags: [String!]!
+  downloadCount: Int!
+  createdAt: Time!
+  updatedAt: Time!
+}
+
+type Folder {
+  id: ID!
+  name: String!
+  createdAt: Time!
+}
+
+type QuotaInfo {
+  used: Int!
+  limit: Int!
+  percentage: Float!
+  files: Int!
+}
+
+type FileConnection {
+  nodes: [File!]!
+  totalCount: Int!
+  hasNextPage: Boolean!
+}
+
+type UploadResponse {
+  uploadId: ID!
+  uploadUrl: String!
+  expiresAt: Time!
+  maxFileSize: Int!
+}
+
+type DownloadInfo {
+  downloadUrl: String!
+  expiresAt: Time!
+  filename: String!
+  size: Int!
+}
+
+type DeleteResponse {
+  success: Boolean!
+  message: String!
+}
+
+type AuthResponse {
+  token: String!
+  user: User!
+}
+
+input RegisterInput {
+  name: String!
+  email: String!
+  password: String!
+}
+
+input UploadRequestInput {
+  filename: String!
+  mimeType: String!
+  folderId: ID
+  description: String
+  tags: [String!]
+  isPublic: Boolean! = false
+}
+
+input UpdateFileInput {
+  description: String
+  tags: [String!]
+  isPublic: Boolean
+}
+
+type ShareLinkResponse {
+  shareToken: String!
+  shareUrl: String!
+  expiresAt: Time
+  isActive: Boolean!
+}
+
+# Admin-specific types
+type AdminFileConnection {
+  nodes: [AdminFile!]!
+  totalCount: Int!
+  hasNextPage: Boolean!
+}
+
+type AdminFile {
+  id: ID!
+  filename: String!
+  originalFilename: String!
+  size: Int!
+  mimeType: String!
+  isPublic: Boolean!
+  description: String
+  tags: [String!]!
+  downloadCount: Int!
+  createdAt: Time!
+  updatedAt: Time!
+  # Admin-specific fields
+  owner: User!
+  totalDownloads: Int!
+  lastDownloadAt: Time
+}
+
+type AdminUserConnection {
+  nodes: [AdminUser!]!
+  totalCount: Int!
+  hasNextPage: Boolean!
+}
+
+type AdminUser {
+  id: ID!
+  name: String!
+  email: String!
+  role: String!
+  quotaUsed: Int!
+  quotaLimit: Int!
+  isActive: Boolean!
+  createdAt: Time!
+  # Admin-specific fields
+  fileCount: Int!
+  totalDownloads: Int!
+  lastLoginAt: Time
+}
+
+type AdminStats {
+  totalUsers: Int!
+  totalFiles: Int!
+  totalDownloads: Int!
+  totalStorageUsed: Int!
+  activeUsers: Int!
+  publicFiles: Int!
+  recentUploads: Int!
+  recentDownloads: Int!
+}

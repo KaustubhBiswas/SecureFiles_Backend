@@ -1,0 +1,133 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+.env.staging
+.env.test
+
+# Go build outputs
+main
+main.exe
+*.exe
+*.dll
+*.so
+*.dylib
+server
+server.exe
+
+# Go test binary, built with `go test -c`
+*.test
+
+# Go coverage files
+*.out
+coverage.html
+coverage.xml
+
+# Go mod cache
+go.sum.backup
+
+# Dependency directories
+vendor/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+log/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Upload files (since these contain user data)
+uploadfiles/
+uploads/
+files/
+
+# Docker files (optional - remove if you want to track them)
+# docker-compose.override.yml
+
+# SSL certificates and keys
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+
+# AWS credentials (if any)
+.aws/
+credentials
+
+# GraphQL generated files (optional - remove if you want to track them)
+# graph/generated/
+
+# Test files and coverage
+test_output/
+*.cover
+profile.cov
+
+# Build and distribution directories
+build/
+dist/
+bin/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Local configuration files
+config.local.yaml
+config.local.json
+
+# JWT secrets and encryption keys
+*.secret
+secrets/
+
+# Migration rollback files
+*.rollback.sql
+
+# Performance profiling files
+*.prof
+*.trace
+
+# Air live reload (if using)
+.air.toml
+tmp/
+
+# Delve debugger files
+__debug_bin
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Exclude any compiled binaries
+**/bin/
+**/build/
+
+# Exclude any local scripts
+scripts/local/
