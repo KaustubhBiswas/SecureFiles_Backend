@@ -301,9 +301,10 @@ func main() {
 	// Add debug endpoint
 	router.HandleFunc("/debug/token", debugTokenHandler).Methods("GET", "POST")
 
-	// Setup CORS with more permissive settings for development
+	// Setup CORS with more permissive settings for development and production
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{
+			// Development origins
 			"http://localhost:5173",
 			"http://localhost:5174",
 			"http://localhost:5175",
@@ -314,6 +315,21 @@ func main() {
 			"http://127.0.0.1:5175",
 			"http://127.0.0.1:5176",
 			"http://127.0.0.1:3000",
+			// Production origins - add your specific Vercel domains
+			"https://secure-files-frontend.vercel.app",
+			"https://securefiles-frontend.vercel.app",
+		},
+		// Allow origin function to handle dynamic Vercel preview deployments
+		AllowOriginFunc: func(origin string) bool {
+			// Allow any vercel.app subdomain for preview deployments
+			if strings.HasSuffix(origin, ".vercel.app") {
+				return true
+			}
+			// Allow localhost for development
+			if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:") {
+				return true
+			}
+			return false
 		},
 		AllowCredentials: true,
 		AllowedHeaders: []string{
@@ -322,6 +338,8 @@ func main() {
 			"Accept",
 			"Origin",
 			"X-Requested-With",
+			"Access-Control-Request-Method",
+			"Access-Control-Request-Headers",
 		},
 		AllowedMethods: []string{
 			"GET",
@@ -329,16 +347,32 @@ func main() {
 			"PUT",
 			"DELETE",
 			"OPTIONS",
+			"PATCH",
 		},
 		ExposedHeaders: []string{
 			"Content-Length",
 			"Content-Type",
+			"Authorization",
 		},
 		MaxAge: 86400, // 24 hours
 	})
 
 	// Apply CORS to the router
 	httpHandler := c.Handler(router)
+
+	// Add global OPTIONS handler for preflight requests
+	router.Methods("OPTIONS").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers for preflight
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Origin, X-Requested-With, Access-Control-Request-Method, Access-Control-Request-Headers")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.WriteHeader(http.StatusOK)
+	})
 
 	// Start server
 	port := os.Getenv("PORT")
