@@ -44,6 +44,16 @@ type DownloadResponse struct {
 func (h *DownloadHandler) HandleFileDownload(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 File download request received from %s", r.RemoteAddr)
 
+	// Handle CORS preflight requests
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// Get file ID from URL
 	vars := mux.Vars(r)
 	fileID := vars["fileId"]
@@ -183,6 +193,16 @@ func (h *DownloadHandler) HandleFileDownload(w http.ResponseWriter, r *http.Requ
 // HandlePublicFileDownload handles downloads via share token without authentication
 func (h *DownloadHandler) HandlePublicFileDownload(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📥 Public file download request received from %s", r.RemoteAddr)
+
+	// Handle CORS preflight requests
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	// Get share token from URL
 	vars := mux.Vars(r)

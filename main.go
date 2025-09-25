@@ -199,8 +199,18 @@ func main() {
 		log.Printf("✅ Using BASE_URL from environment: %s", baseURL)
 	}
 
-	// Initialize resolver with encryption service and base URL
-	resolver := resolvers.NewResolver(database, s3Service, encryptionService, baseURL)
+	// Get frontend URL for share links
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		// Default to localhost for development
+		frontendURL = "http://localhost:5173"
+		log.Printf("⚠️ FRONTEND_URL not set, using default: %s", frontendURL)
+	} else {
+		log.Printf("✅ Using FRONTEND_URL from environment: %s", frontendURL)
+	}
+
+	// Initialize resolver with encryption service, base URL, and frontend URL
+	resolver := resolvers.NewResolver(database, s3Service, encryptionService, baseURL, frontendURL)
 
 	// Initialize upload handler - only if S3 service is available
 	var uploadHandler *handlers.UploadHandler
@@ -236,7 +246,7 @@ func main() {
 	log.Printf("🎮 GraphQL playground: /graphql")
 
 	// Initialize PUBLIC GraphQL handler
-	publicGraphQLHandler := handlers.NewPublicGraphQLHandler(database, s3Service, encryptionService, baseURL)
+	publicGraphQLHandler := handlers.NewPublicGraphQLHandler(database, s3Service, encryptionService, baseURL, frontendURL)
 
 	// Add PUBLIC routes
 	publicRoutes := router.PathPrefix("/public").Subrouter()

@@ -28,14 +28,16 @@ type Resolver struct {
 	S3Service         *services.S3Service
 	EncryptionService *services.EncryptionService
 	BaseURL           string
+	FrontendURL       string
 }
 
-func NewResolver(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService, baseURL string) *Resolver {
+func NewResolver(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService, baseURL string, frontendURL string) *Resolver {
 	return &Resolver{
 		DB:                db,
 		S3Service:         s3Service,
 		EncryptionService: encryptionService,
 		BaseURL:           baseURL,
+		FrontendURL:       frontendURL,
 	}
 }
 
@@ -1310,7 +1312,7 @@ func (r *mutationResolver) GenerateShareLink(ctx context.Context, fileID string,
 	}
 
 	// Generate the public share URL
-	shareURL := fmt.Sprintf("http://localhost:5173/share/%s", shareToken)
+	shareURL := fmt.Sprintf("%s/share/%s", r.FrontendURL, shareToken)
 
 	log.Printf("✅ Share link generated for file %s: token=%s, expires=%v", fileID, shareToken, expiresAt)
 
