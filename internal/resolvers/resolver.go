@@ -27,13 +27,15 @@ type Resolver struct {
 	DB                *sql.DB
 	S3Service         *services.S3Service
 	EncryptionService *services.EncryptionService
+	BaseURL           string
 }
 
-func NewResolver(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService) *Resolver {
+func NewResolver(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService, baseURL string) *Resolver {
 	return &Resolver{
 		DB:                db,
 		S3Service:         s3Service,
 		EncryptionService: encryptionService,
+		BaseURL:           baseURL,
 	}
 }
 
@@ -492,10 +494,12 @@ func (r *queryResolver) DownloadFile(ctx context.Context, id string) (*model.Dow
 	}
 
 	// Generate download URL
-	downloadURL := fmt.Sprintf("http://localhost:8080/download/%s", fileID)
+	downloadURL := fmt.Sprintf("%s/download/%s", r.BaseURL, fileID)
 	if isPublic {
-		downloadURL = fmt.Sprintf("http://localhost:8080/public/download/%s", fileID)
+		downloadURL = fmt.Sprintf("%s/public/download/%s", r.BaseURL, fileID)
 	}
+
+	log.Printf("🔗 Generated download URL: %s (BaseURL: %s)", downloadURL, r.BaseURL)
 
 	expiresAt := time.Now().Add(1 * time.Hour) // 1 hour expiry
 
@@ -1466,7 +1470,8 @@ func (r *queryResolver) PublicDownload(ctx context.Context, shareToken string) (
 	}
 
 	// Generate download URL with share token
-	downloadURL := fmt.Sprintf("http://localhost:8080/share/download/%s", shareToken)
+	downloadURL := fmt.Sprintf("%s/share/download/%s", r.BaseURL, shareToken)
+	log.Printf("🔗 Generated share download URL: %s (BaseURL: %s)", downloadURL, r.BaseURL)
 	expiresAtTime := time.Now().Add(1 * time.Hour) // 1 hour expiry for download URL
 
 	return &model.DownloadInfo{

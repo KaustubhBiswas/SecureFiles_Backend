@@ -185,8 +185,22 @@ func main() {
 		log.Printf("✅ Encryption service initialized successfully")
 	}
 
-	// Initialize resolver with encryption service
-	resolver := resolvers.NewResolver(database, s3Service, encryptionService)
+	// Get base URL for download links
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		// Default to localhost for development
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
+		}
+		baseURL = fmt.Sprintf("http://localhost:%s", port)
+		log.Printf("⚠️ BASE_URL not set, using default: %s", baseURL)
+	} else {
+		log.Printf("✅ Using BASE_URL from environment: %s", baseURL)
+	}
+
+	// Initialize resolver with encryption service and base URL
+	resolver := resolvers.NewResolver(database, s3Service, encryptionService, baseURL)
 
 	// Initialize upload handler - only if S3 service is available
 	var uploadHandler *handlers.UploadHandler
@@ -222,7 +236,7 @@ func main() {
 	log.Printf("🎮 GraphQL playground: /graphql")
 
 	// Initialize PUBLIC GraphQL handler
-	publicGraphQLHandler := handlers.NewPublicGraphQLHandler(database, s3Service, encryptionService)
+	publicGraphQLHandler := handlers.NewPublicGraphQLHandler(database, s3Service, encryptionService, baseURL)
 
 	// Add PUBLIC routes
 	publicRoutes := router.PathPrefix("/public").Subrouter()
@@ -353,6 +367,7 @@ func main() {
 			"Content-Length",
 			"Content-Type",
 			"Authorization",
+			"Content-Disposition",
 		},
 		MaxAge: 86400, // 24 hours
 	})

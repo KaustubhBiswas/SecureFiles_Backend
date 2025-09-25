@@ -18,9 +18,9 @@ type PublicGraphQLHandler struct {
 	server *handler.Server
 }
 
-func NewPublicGraphQLHandler(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService) *PublicGraphQLHandler {
+func NewPublicGraphQLHandler(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService, baseURL string) *PublicGraphQLHandler {
 	// Create resolver with correct fields - matching your existing resolver.go
-	resolver := resolvers.NewResolver(db, s3Service, encryptionService)
+	resolver := resolvers.NewResolver(db, s3Service, encryptionService, baseURL)
 
 	srv := handler.NewDefaultServer(generated.NewExecutableSchema(generated.Config{
 		Resolvers: resolver,

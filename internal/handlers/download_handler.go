@@ -161,6 +161,12 @@ func (h *DownloadHandler) HandleFileDownload(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Serve the decrypted file directly
+	// Set CORS headers for cross-origin requests
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Type")
+
 	w.Header().Set("Content-Type", file.MimeType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.OriginalFilename))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(originalContent)))
@@ -291,6 +297,12 @@ func (h *DownloadHandler) HandlePublicFileDownload(w http.ResponseWriter, r *htt
 	}
 
 	// Serve the decrypted file directly
+	// Set CORS headers for cross-origin requests
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Type")
+
 	w.Header().Set("Content-Type", file.MimeType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.OriginalFilename))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(originalContent)))
@@ -328,6 +340,10 @@ func (h *DownloadHandler) sendErrorResponse(w http.ResponseWriter, message strin
 		Error:   message,
 	}
 
+	// Set CORS headers for error responses too
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(response)
