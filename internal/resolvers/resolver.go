@@ -418,10 +418,15 @@ func (r *queryResolver) Folders(ctx context.Context, parentID *string) ([]*model
 }
 
 func (r *queryResolver) QuotaUsage(ctx context.Context) (*model.QuotaInfo, error) {
+	log.Printf("🔍 QuotaUsage query called")
+
 	claims, err := auth.GetUserFromContext(ctx)
 	if err != nil {
+		log.Printf("❌ QuotaUsage query - authentication failed: %v", err)
 		return nil, fmt.Errorf("authentication required: %v", err)
 	}
+
+	log.Printf("✅ QuotaUsage query - authenticated user: ID=%s, Email=%s", claims.UserID, claims.Email)
 
 	var quotaUsed, quotaLimit int64
 	var fileCount int
@@ -433,7 +438,39 @@ func (r *queryResolver) QuotaUsage(ctx context.Context) (*model.QuotaInfo, error
 		Scan(&quotaUsed, &quotaLimit, &fileCount)
 
 	if err != nil {
+		log.Printf("❌ Failed to get quota usage: %v", err)
 		return nil, fmt.Errorf("failed to get quota usage: %v", err)
+	}
+
+	log.Printf("📊 Raw quota data: used=%d, limit=%d, files=%d", quotaUsed, quotaLimit, fileCount)
+
+	// Fix negative quota values by recalculating from actual files
+	if quotaUsed < 0 {
+		log.Printf("⚠️ Negative quota detected (%d), recalculating from actual files...", quotaUsed)
+
+		var actualUsage int64
+		err = r.DB.QueryRow(`
+			SELECT COALESCE(SUM(f.file_size), 0) 
+			FROM files f 
+			WHERE f.owner_id = $1 AND f.deleted_at IS NULL`, claims.UserID).Scan(&actualUsage)
+
+		if err != nil {
+			log.Printf("❌ Failed to calculate actual usage: %v", err)
+			return nil, fmt.Errorf("failed to calculate quota usage: %v", err)
+		}
+
+		log.Printf("🔧 Calculated actual usage: %d bytes", actualUsage)
+
+		// Update the database with the correct quota
+		_, err = r.DB.Exec("UPDATE users SET quota_used = $1 WHERE id = $2", actualUsage, claims.UserID)
+		if err != nil {
+			log.Printf("❌ Failed to fix quota in database: %v", err)
+			// Continue with the calculated value even if DB update fails
+		} else {
+			log.Printf("✅ Fixed quota in database: %d -> %d", quotaUsed, actualUsage)
+		}
+
+		quotaUsed = actualUsage
 	}
 
 	var percentage float64
@@ -441,12 +478,15 @@ func (r *queryResolver) QuotaUsage(ctx context.Context) (*model.QuotaInfo, error
 		percentage = float64(quotaUsed) / float64(quotaLimit) * 100.0
 	}
 
-	return &model.QuotaInfo{
+	result := &model.QuotaInfo{
 		Used:       int(quotaUsed),
 		Limit:      int(quotaLimit),
 		Percentage: percentage,
 		Files:      fileCount,
-	}, nil
+	}
+
+	log.Printf("✅ QuotaUsage query result: %+v", result)
+	return result, nil
 }
 
 func (r *queryResolver) DownloadFile(ctx context.Context, id string) (*model.DownloadInfo, error) {
