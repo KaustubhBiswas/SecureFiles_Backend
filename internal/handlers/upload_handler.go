@@ -140,6 +140,24 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 	log.Printf("✅ File content encrypted successfully (original: %d bytes -> encrypted: %d bytes)",
 		len(originalFileContent), len(encryptedFileContent))
 
+	// Check user quota before proceeding
+	originalFileSize := int64(len(originalFileContent))
+	var currentQuotaUsed, quotaLimit int64
+	err = h.DB.QueryRow("SELECT quota_used, quota_limit FROM users WHERE id = $1", claims.UserID).
+		Scan(&currentQuotaUsed, &quotaLimit)
+	if err != nil {
+		log.Printf("❌ Failed to get user quota: %v", err)
+		h.sendErrorResponse(w, "Failed to verify quota", http.StatusInternalServerError)
+		return
+	}
+
+	if currentQuotaUsed+originalFileSize > quotaLimit {
+		log.Printf("❌ Quota exceeded: current=%d, file_size=%d, limit=%d", currentQuotaUsed, originalFileSize, quotaLimit)
+		h.sendErrorResponse(w, fmt.Sprintf("Insufficient quota: file size %d bytes would exceed available quota of %d bytes",
+			originalFileSize, quotaLimit-currentQuotaUsed), http.StatusBadRequest)
+		return
+	}
+
 	// Generate unique identifiers
 	fileID := uuid.New().String()
 	blobID := uuid.New().String()
@@ -283,7 +301,21 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	log.Printf("✅ File uploaded successfully: %s (blob: %s, hash: %s) - ENCRYPTED IN S3",
+	// Update user quota
+	_, err = h.DB.Exec("UPDATE users SET quota_used = quota_used + $1 WHERE id = $2", originalFileSize, claims.UserID)
+	if err != nil {
+		log.Printf("❌ Failed to update user quota: %v", err)
+		// Clean up file and blob records and S3 object
+		h.DB.Exec("DELETE FROM files WHERE id = $1", fileID)
+		h.DB.Exec("DELETE FROM blobs WHERE id = $1", blobID)
+		if !objectExists {
+			h.S3Service.DeleteObject(s3Key)
+		}
+		h.sendErrorResponse(w, "Failed to update quota", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("✅ File uploaded successfully: %s (blob: %s, hash: %s) - ENCRYPTED IN S3, quota updated",
 		fileID, blobID, originalContentHash)
 
 	response := UploadResponse{
