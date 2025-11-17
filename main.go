@@ -209,8 +209,12 @@ func main() {
 		log.Printf("✅ Using FRONTEND_URL from environment: %s", frontendURL)
 	}
 
-	// Initialize resolver with encryption service, base URL, and frontend URL
-	resolver := resolvers.NewResolver(database, s3Service, encryptionService, baseURL, frontendURL)
+	// Initialize folder service
+	folderService := services.NewFolderService(database)
+	log.Printf("✅ Folder service initialized successfully")
+
+	// Initialize resolver with all services
+	resolver := resolvers.NewResolver(database, s3Service, encryptionService, folderService, baseURL, frontendURL)
 
 	// Initialize upload handler - only if S3 service is available
 	var uploadHandler *handlers.UploadHandler
@@ -246,7 +250,7 @@ func main() {
 	log.Printf("🎮 GraphQL playground: /graphql")
 
 	// Initialize PUBLIC GraphQL handler
-	publicGraphQLHandler := handlers.NewPublicGraphQLHandler(database, s3Service, encryptionService, baseURL, frontendURL)
+	publicGraphQLHandler := handlers.NewPublicGraphQLHandler(database, s3Service, encryptionService, folderService, baseURL, frontendURL)
 
 	// Add PUBLIC routes
 	publicRoutes := router.PathPrefix("/public").Subrouter()

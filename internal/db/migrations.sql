@@ -115,6 +115,303 @@ BEGIN
     END IF;
 END $$;
 
+-- ========== FOLDER SHARING ENHANCEMENTS ==========
+-- Add columns for public sharing and folder management
+DO $$
+BEGIN
+    -- Add is_public column
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'folders' AND column_name = 'is_public'
+    ) THEN
+        ALTER TABLE folders ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT false;
+        RAISE NOTICE 'Added is_public column to folders table';
+    END IF;
+    
+    -- Add share_token for public links
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'folders' AND column_name = 'share_token'
+    ) THEN
+        ALTER TABLE folders ADD COLUMN share_token VARCHAR(255) UNIQUE;
+        RAISE NOTICE 'Added share_token column to folders table';
+    END IF;
+    
+    -- Add description
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'folders' AND column_name = 'description'
+    ) THEN
+        ALTER TABLE folders ADD COLUMN description TEXT;
+        RAISE NOTICE 'Added description column to folders table';
+    END IF;
+    
+    -- Add deleted_at for soft delete
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'folders' AND column_name = 'deleted_at'
+    ) THEN
+        ALTER TABLE folders ADD COLUMN deleted_at TIMESTAMP WITH TIME ZONE;
+        RAISE NOTICE 'Added deleted_at column to folders table';
+    END IF;
+    
+    -- Add color for UI customization
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'folders' AND column_name = 'color'
+    ) THEN
+        ALTER TABLE folders ADD COLUMN color VARCHAR(20);
+        RAISE NOTICE 'Added color column to folders table';
+    END IF;
+    
+    -- Add inherit_public flag to control cascading
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'folders' AND column_name = 'inherit_public'
+    ) THEN
+        ALTER TABLE folders ADD COLUMN inherit_public BOOLEAN NOT NULL DEFAULT true;
+        RAISE NOTICE 'Added inherit_public column to folders table';
+    END IF;
+END $$;
+
+-- Create folder_permissions table for granular access control
+CREATE TABLE IF NOT EXISTS folder_permissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    folder_id UUID NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission_level VARCHAR(20) NOT NULL DEFAULT 'READ', -- READ, WRITE, ADMIN
+    granted_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    granted_by UUID REFERENCES users(id),
+    UNIQUE(folder_id, user_id)
+);
+
+-- Create folder_access_logs table for audit trail
+CREATE TABLE IF NOT EXISTS folder_access_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    folder_id UUID NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    access_type VARCHAR(50) NOT NULL, -- view, download, share_link
+    ip_address VARCHAR(45),
+    accessed_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- Create folder_paths materialized view for efficient breadcrumb queries
+CREATE TABLE IF NOT EXISTS folder_paths (
+    folder_id UUID NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    ancestor_id UUID NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    depth INTEGER NOT NULL,
+    PRIMARY KEY (folder_id, ancestor_id)
+);
+
+-- ========== FOLDER INDEXES ==========
+DO $$
+BEGIN
+    -- Index for share token lookups
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folders_share_token'
+    ) THEN
+        CREATE INDEX idx_folders_share_token ON folders(share_token) WHERE share_token IS NOT NULL;
+    END IF;
+    
+    -- Index for public folders
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folders_is_public'
+    ) THEN
+        CREATE INDEX idx_folders_is_public ON folders(is_public) WHERE is_public = true;
+    END IF;
+    
+    -- Index for soft delete queries
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folders_deleted_at'
+    ) THEN
+        CREATE INDEX idx_folders_deleted_at ON folders(deleted_at) WHERE deleted_at IS NULL;
+    END IF;
+    
+    -- Composite index for folder listing
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folders_owner_parent'
+    ) THEN
+        CREATE INDEX idx_folders_owner_parent ON folders(owner_id, parent_folder_id);
+    END IF;
+    
+    -- Index for permission lookups
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folder_permissions_folder'
+    ) THEN
+        CREATE INDEX idx_folder_permissions_folder ON folder_permissions(folder_id);
+    END IF;
+    
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folder_permissions_user'
+    ) THEN
+        CREATE INDEX idx_folder_permissions_user ON folder_permissions(user_id);
+    END IF;
+    
+    -- Index for access logs
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folder_access_logs_folder'
+    ) THEN
+        CREATE INDEX idx_folder_access_logs_folder ON folder_access_logs(folder_id);
+    END IF;
+    
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folder_access_logs_accessed_at'
+    ) THEN
+        CREATE INDEX idx_folder_access_logs_accessed_at ON folder_access_logs(accessed_at DESC);
+    END IF;
+    
+    -- Indexes for folder_paths
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folder_paths_folder'
+    ) THEN
+        CREATE INDEX idx_folder_paths_folder ON folder_paths(folder_id);
+    END IF;
+    
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = 'idx_folder_paths_ancestor'
+    ) THEN
+        CREATE INDEX idx_folder_paths_ancestor ON folder_paths(ancestor_id);
+    END IF;
+END $$;
+
+-- ========== FOLDER HELPER FUNCTIONS ==========
+
+-- Function to check if folder is descendant of another
+CREATE OR REPLACE FUNCTION is_folder_descendant(child_id UUID, parent_id UUID)
+RETURNS BOOLEAN AS $$
+BEGIN
+    RETURN EXISTS (
+        SELECT 1 FROM folder_paths 
+        WHERE folder_id = child_id AND ancestor_id = parent_id
+    );
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Function to get folder breadcrumb path
+CREATE OR REPLACE FUNCTION get_folder_breadcrumb(folder_id_param UUID)
+RETURNS TABLE (
+    id UUID,
+    name VARCHAR,
+    parent_folder_id UUID,
+    depth INTEGER
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH RECURSIVE breadcrumb AS (
+        SELECT f.id, f.name, f.parent_folder_id, 0 as depth
+        FROM folders f
+        WHERE f.id = folder_id_param AND f.deleted_at IS NULL
+        
+        UNION ALL
+        
+        SELECT f.id, f.name, f.parent_folder_id, b.depth + 1
+        FROM folders f
+        INNER JOIN breadcrumb b ON f.id = b.parent_folder_id
+        WHERE f.deleted_at IS NULL
+    )
+    SELECT * FROM breadcrumb ORDER BY depth DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to rebuild folder_paths table
+CREATE OR REPLACE FUNCTION rebuild_folder_paths()
+RETURNS void AS $$
+BEGIN
+    TRUNCATE folder_paths;
+    
+    INSERT INTO folder_paths (folder_id, ancestor_id, depth)
+    WITH RECURSIVE folder_tree AS (
+        -- Base case: each folder is its own ancestor at depth 0
+        SELECT id as folder_id, id as ancestor_id, 0 as depth
+        FROM folders
+        WHERE deleted_at IS NULL
+        
+        UNION ALL
+        
+        -- Recursive case: inherit ancestors from parent
+        SELECT f.id, ft.ancestor_id, ft.depth + 1
+        FROM folders f
+        INNER JOIN folder_tree ft ON f.parent_folder_id = ft.folder_id
+        WHERE f.deleted_at IS NULL
+    )
+    SELECT * FROM folder_tree;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to update folder paths when folder is moved or created
+CREATE OR REPLACE FUNCTION update_folder_paths()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Rebuild paths for the affected folder and its descendants
+    IF TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.parent_folder_id IS DISTINCT FROM NEW.parent_folder_id) THEN
+        -- Delete old paths for this folder and its descendants
+        DELETE FROM folder_paths 
+        WHERE folder_id IN (
+            WITH RECURSIVE descendants AS (
+                SELECT id FROM folders WHERE id = NEW.id
+                UNION ALL
+                SELECT f.id FROM folders f
+                INNER JOIN descendants d ON f.parent_folder_id = d.id
+            )
+            SELECT id FROM descendants
+        );
+        
+        -- Rebuild paths for this folder and its descendants
+        INSERT INTO folder_paths (folder_id, ancestor_id, depth)
+        WITH RECURSIVE folder_subtree AS (
+            -- Get all ancestors of the new parent (or self if root)
+            SELECT fp.folder_id, fp.ancestor_id, fp.depth
+            FROM folder_paths fp
+            WHERE fp.folder_id = COALESCE(NEW.parent_folder_id, NEW.id)
+            
+            UNION ALL
+            
+            -- Add the new folder itself at appropriate depth
+            SELECT NEW.id, fp.ancestor_id, fp.depth + 1
+            FROM folder_paths fp
+            WHERE fp.folder_id = COALESCE(NEW.parent_folder_id, NEW.id)
+            
+            UNION
+            
+            -- Self-reference
+            SELECT NEW.id, NEW.id, 0
+        ),
+        descendants AS (
+            -- Get all descendants recursively
+            SELECT id, parent_folder_id, 0 as relative_depth FROM folders WHERE id = NEW.id
+            UNION ALL
+            SELECT f.id, f.parent_folder_id, d.relative_depth + 1
+            FROM folders f
+            INNER JOIN descendants d ON f.parent_folder_id = d.id
+        )
+        SELECT d.id as folder_id, fs.ancestor_id, fs.depth + d.relative_depth as depth
+        FROM descendants d
+        CROSS JOIN folder_subtree fs
+        ON CONFLICT (folder_id, ancestor_id) DO NOTHING;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger for automatic path updates
+DROP TRIGGER IF EXISTS trigger_update_folder_paths ON folders;
+CREATE TRIGGER trigger_update_folder_paths
+    AFTER INSERT OR UPDATE OF parent_folder_id ON folders
+    FOR EACH ROW
+    WHEN (NEW.deleted_at IS NULL)
+    EXECUTE FUNCTION update_folder_paths();
+
 -- ========== FILES TABLE (File Metadata) ==========
 CREATE TABLE IF NOT EXISTS files (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

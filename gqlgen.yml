@@ -11,6 +11,4 @@ resolver:
   dir: internal/resolvers
   package: resolvers
   filename_template: "{name}.resolvers.go"
-  omit_interface: false
-  omit_complexity: false
 autobind: []

@@ -14,6 +14,8 @@ type Query {
   files(folderId: ID, limit: Int, offset: Int): FileConnection!
   file(id: ID!): File!
   folders(parentId: ID): [Folder!]!
+  folder(id: ID!): Folder!
+  folderByPath(path: String!): Folder!  # Get folder by path like "/Work/Projects"
   
   # Download
   downloadFile(id: ID!): DownloadInfo!
@@ -21,6 +23,10 @@ type Query {
   # Public file access (no authentication required)
   publicFile(shareToken: String!): File!
   publicDownload(shareToken: String!): DownloadInfo!
+  
+  # Public folder access (no authentication required)
+  publicFolder(shareToken: String!): PublicFolderView!
+  publicFolderContents(shareToken: String!, path: String): FolderContents!
   
   # Admin-only queries (requires ADMIN role)
   adminAllFiles(limit: Int, offset: Int): AdminFileConnection!
@@ -38,7 +44,16 @@ type Mutation {
   register(input: RegisterInput!): AuthResponse!
   
   # Folder Operations
-  createFolder(name: String!, parentId: ID): Folder!
+  createFolder(name: String!, parentId: ID, color: String, description: String): Folder!
+  updateFolder(id: ID!, input: UpdateFolderInput!): Folder!
+  deleteFolder(id: ID!): DeleteResponse!
+  moveFolder(id: ID!, newParentId: ID): Folder!
+  
+  # Folder Sharing
+  generateFolderShareLink(folderId: ID!, expiresIn: Int): ShareLinkResponse!
+  revokeFolderShareLink(folderId: ID!): DeleteResponse!
+  toggleFolderPublic(folderId: ID!): Folder!
+  updateFolderPermissions(folderId: ID!, inheritPublic: Boolean!): Folder!
   
   # File Operations
   requestUpload(input: UploadRequestInput!): UploadResponse!
@@ -47,6 +62,7 @@ type Mutation {
   toggleFileVisibility(id: ID!): File!
   generateShareLink(fileID: String!, expiresIn: Int): ShareLinkResponse!
   updateFile(id: ID!, input: UpdateFileInput!): File!
+  moveFile(id: ID!, newFolderId: ID): File!
   
   # Admin-only mutations (requires ADMIN role)
   adminDeleteFile(fileId: ID!): DeleteResponse!
@@ -82,7 +98,22 @@ type File {
 type Folder {
   id: ID!
   name: String!
+  parentId: ID
+  ownerId: ID!
+  isPublic: Boolean!
+  shareToken: String
+  description: String
+  color: String
+  inheritPublic: Boolean!
   createdAt: Time!
+  updatedAt: Time!
+  
+  # Computed fields
+  path: [Folder!]!  # Breadcrumb path from root to this folder
+  children: [Folder!]!  # Direct child folders
+  files: [File!]!  # Files in this folder
+  isShared: Boolean!  # Whether folder has an active share link
+  canAccess: Boolean!  # Whether current user can access (considers inheritance)
 }
 
 type QuotaInfo {
@@ -148,6 +179,41 @@ type ShareLinkResponse {
   shareUrl: String!
   expiresAt: Time
   isActive: Boolean!
+}
+
+# Folder-specific types
+input UpdateFolderInput {
+  name: String
+  description: String
+  color: String
+  isPublic: Boolean
+  inheritPublic: Boolean
+}
+
+type PublicFolderView {
+  folder: Folder!
+  breadcrumbs: [Folder!]!
+  canDownloadAll: Boolean!
+  stats: FolderStats!
+}
+
+type FolderContents {
+  folders: [Folder!]!
+  files: [File!]!
+  totalSize: Int!
+  itemCount: Int!
+}
+
+type FolderStats {
+  totalFiles: Int!
+  totalSize: Int!
+  fileTypes: [FileTypeCount!]!
+}
+
+type FileTypeCount {
+  mimeType: String!
+  count: Int!
+  totalSize: Int!
 }
 
 # Admin-specific types

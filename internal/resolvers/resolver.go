@@ -27,15 +27,17 @@ type Resolver struct {
 	DB                *sql.DB
 	S3Service         *services.S3Service
 	EncryptionService *services.EncryptionService
+	FolderService     *services.FolderService
 	BaseURL           string
 	FrontendURL       string
 }
 
-func NewResolver(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService, baseURL string, frontendURL string) *Resolver {
+func NewResolver(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService, folderService *services.FolderService, baseURL string, frontendURL string) *Resolver {
 	return &Resolver{
 		DB:                db,
 		S3Service:         s3Service,
 		EncryptionService: encryptionService,
+		FolderService:     folderService,
 		BaseURL:           baseURL,
 		FrontendURL:       frontendURL,
 	}
@@ -45,8 +47,12 @@ func NewResolver(db *sql.DB, s3Service *services.S3Service, encryptionService *s
 func (r *Resolver) Mutation() generated.MutationResolver { return &mutationResolver{r} }
 func (r *Resolver) Query() generated.QueryResolver       { return &queryResolver{r} }
 
+// func (r *Resolver) Folder() generated.FolderResolver     { return &folderResolver{r} }
+
 type mutationResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
+
+// type folderResolver struct{ *Resolver }
 
 // ========== QUERY RESOLVERS ==========
 
@@ -379,42 +385,6 @@ func (r *queryResolver) getPublicFiles(ctx context.Context, limit *int, offset *
 		TotalCount:  totalCount,
 		HasNextPage: hasNextPage,
 	}, nil
-}
-
-func (r *queryResolver) Folders(ctx context.Context, parentID *string) ([]*model.Folder, error) {
-	claims, err := auth.GetUserFromContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("authentication required: %v", err)
-	}
-
-	var query string
-	var args []interface{}
-
-	if parentID == nil {
-		query = "SELECT id, name, created_at FROM folders WHERE owner_id = $1 AND parent_folder_id IS NULL AND deleted_at IS NULL ORDER BY name"
-		args = []interface{}{claims.UserID}
-	} else {
-		query = "SELECT id, name, created_at FROM folders WHERE owner_id = $1 AND parent_folder_id = $2 AND deleted_at IS NULL ORDER BY name"
-		args = []interface{}{claims.UserID, *parentID}
-	}
-
-	rows, err := r.DB.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query folders: %v", err)
-	}
-	defer rows.Close()
-
-	var folders []*model.Folder
-	for rows.Next() {
-		folder := &model.Folder{}
-		err := rows.Scan(&folder.ID, &folder.Name, &folder.CreatedAt)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan folder: %v", err)
-		}
-		folders = append(folders, folder)
-	}
-
-	return folders, nil
 }
 
 func (r *queryResolver) QuotaUsage(ctx context.Context) (*model.QuotaInfo, error) {
@@ -1083,55 +1053,6 @@ func (r *mutationResolver) DeleteFile(ctx context.Context, id string) (*model.De
 	return &model.DeleteResponse{
 		Success: true,
 		Message: "File deleted successfully",
-	}, nil
-}
-
-func (r *mutationResolver) CreateFolder(ctx context.Context, name string, parentID *string) (*model.Folder, error) {
-	claims, err := auth.GetUserFromContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("authentication required")
-	}
-
-	var folderID string
-	var createdAt time.Time
-
-	if parentID == nil {
-		err = r.DB.QueryRow(`
-            INSERT INTO folders (name, owner_id, parent_folder_id, created_at)
-            VALUES ($1, $2, NULL, NOW())
-            RETURNING id, created_at`, name, claims.UserID).
-			Scan(&folderID, &createdAt)
-	} else {
-		// Verify parent folder exists and belongs to user
-		var parentOwnerID string
-		err = r.DB.QueryRow("SELECT owner_id FROM folders WHERE id = $1 AND deleted_at IS NULL", *parentID).Scan(&parentOwnerID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, fmt.Errorf("parent folder not found")
-			}
-			return nil, fmt.Errorf("database error: %v", err)
-		}
-		if parentOwnerID != claims.UserID {
-			return nil, fmt.Errorf("access denied to parent folder")
-		}
-
-		err = r.DB.QueryRow(`
-            INSERT INTO folders (name, parent_folder_id, owner_id, created_at)
-            VALUES ($1, $2, $3, NOW())
-            RETURNING id, created_at`, name, *parentID, claims.UserID).
-			Scan(&folderID, &createdAt)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to create folder: %v", err)
-	}
-
-	log.Printf("📁 Folder created: %s (%s) by user: %s", name, folderID, claims.UserID)
-
-	return &model.Folder{
-		ID:        folderID,
-		Name:      name,
-		CreatedAt: createdAt,
 	}, nil
 }
 

@@ -97,13 +97,52 @@ type FileConnection struct {
 	HasNextPage bool    `json:"hasNextPage"`
 }
 
+type FileTypeCount struct {
+	MimeType  string `json:"mimeType"`
+	Count     int    `json:"count"`
+	TotalSize int    `json:"totalSize"`
+}
+
 type Folder struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	ParentID      *string   `json:"parentId,omitempty"`
+	OwnerID       string    `json:"ownerId"`
+	IsPublic      bool      `json:"isPublic"`
+	ShareToken    *string   `json:"shareToken,omitempty"`
+	Description   *string   `json:"description,omitempty"`
+	Color         *string   `json:"color,omitempty"`
+	InheritPublic bool      `json:"inheritPublic"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+	Path          []*Folder `json:"path"`
+	Children      []*Folder `json:"children"`
+	Files         []*File   `json:"files"`
+	IsShared      bool      `json:"isShared"`
+	CanAccess     bool      `json:"canAccess"`
+}
+
+type FolderContents struct {
+	Folders   []*Folder `json:"folders"`
+	Files     []*File   `json:"files"`
+	TotalSize int       `json:"totalSize"`
+	ItemCount int       `json:"itemCount"`
+}
+
+type FolderStats struct {
+	TotalFiles int              `json:"totalFiles"`
+	TotalSize  int              `json:"totalSize"`
+	FileTypes  []*FileTypeCount `json:"fileTypes"`
 }
 
 type Mutation struct {
+}
+
+type PublicFolderView struct {
+	Folder         *Folder      `json:"folder"`
+	Breadcrumbs    []*Folder    `json:"breadcrumbs"`
+	CanDownloadAll bool         `json:"canDownloadAll"`
+	Stats          *FolderStats `json:"stats"`
 }
 
 type Query struct {
@@ -133,6 +172,14 @@ type UpdateFileInput struct {
 	Description *string  `json:"description,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 	IsPublic    *bool    `json:"isPublic,omitempty"`
+}
+
+type UpdateFolderInput struct {
+	Name          *string `json:"name,omitempty"`
+	Description   *string `json:"description,omitempty"`
+	Color         *string `json:"color,omitempty"`
+	IsPublic      *bool   `json:"isPublic,omitempty"`
+	InheritPublic *bool   `json:"inheritPublic,omitempty"`
 }
 
 type UploadRequestInput struct {

@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Add this init function at the top of your auth.go file, after the imports
+
 func init() {
 	secret := getJWTSecret()
 	if string(secret) == "fallback-dev-secret-change-this-in-production" {
