@@ -176,14 +176,29 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 	// Process folderId - validate if provided
 	var folderID interface{} = nil
 	if folderIdStr != "" {
-		_, err := uuid.Parse(folderIdStr)
+		parsedFolderID, err := uuid.Parse(folderIdStr)
 		if err != nil {
 			log.Printf("❌ Invalid folder ID: %s", folderIdStr)
 			h.sendErrorResponse(w, "Invalid folder ID", http.StatusBadRequest)
 			return
 		}
+
+		// Verify the folder exists and belongs to the user
+		var folderOwnerID string
+		err = h.DB.QueryRow("SELECT owner_id FROM folders WHERE id = $1 AND deleted_at IS NULL", parsedFolderID).Scan(&folderOwnerID)
+		if err != nil {
+			log.Printf("❌ Folder not found or access denied: %s (error: %v)", folderIdStr, err)
+			h.sendErrorResponse(w, "Folder not found or access denied", http.StatusBadRequest)
+			return
+		}
+		if folderOwnerID != claims.UserID {
+			log.Printf("❌ User %s does not own folder %s (owner: %s)", claims.UserID, folderIdStr, folderOwnerID)
+			h.sendErrorResponse(w, "You do not have permission to upload to this folder", http.StatusForbidden)
+			return
+		}
+
 		folderID = folderIdStr
-		log.Printf("📁 Uploading to folder: %s", folderIdStr)
+		log.Printf("📁 Uploading to folder: %s (verified ownership)", folderIdStr)
 	}
 
 	// Process tags
