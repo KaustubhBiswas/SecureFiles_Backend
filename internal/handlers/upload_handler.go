@@ -171,6 +171,20 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 	description := r.FormValue("description")
 	tagsString := r.FormValue("tags")
 	isPublic := r.FormValue("isPublic") == "true"
+	folderIdStr := r.FormValue("folderId")
+
+	// Process folderId - validate if provided
+	var folderID interface{} = nil
+	if folderIdStr != "" {
+		_, err := uuid.Parse(folderIdStr)
+		if err != nil {
+			log.Printf("❌ Invalid folder ID: %s", folderIdStr)
+			h.sendErrorResponse(w, "Invalid folder ID", http.StatusBadRequest)
+			return
+		}
+		folderID = folderIdStr
+		log.Printf("📁 Uploading to folder: %s", folderIdStr)
+	}
 
 	// Process tags
 	var tags []string
@@ -279,7 +293,7 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 		header.Filename,                 // $3 - original_filename
 		blobID,                          // $4 - blob_id
 		claims.UserID,                   // $5 - owner_id
-		nil,                             // $6 - folder_id
+		folderID,                        // $6 - folder_id
 		int64(len(originalFileContent)), // $7 - file_size (ORIGINAL size)
 		isPublic,                        // $8 - is_public
 		description,                     // $9 - description
