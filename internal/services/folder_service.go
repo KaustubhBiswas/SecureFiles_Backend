@@ -134,18 +134,38 @@ func (s *FolderService) GetFolderPath(ctx context.Context, folderID uuid.UUID) (
 }
 
 // GetFolderContents retrieves immediate children folders and files
-func (s *FolderService) GetFolderContents(ctx context.Context, folderID *uuid.UUID) ([]Folder, []File, error) {
-	// Get child folders
-	foldersQuery := `
-		SELECT id, name, parent_folder_id, owner_id, is_public, share_token,
-		       description, color, inherit_public, created_at, updated_at
-		FROM folders
-		WHERE ($1::uuid IS NULL AND parent_folder_id IS NULL OR parent_folder_id = $1) 
-		  AND deleted_at IS NULL
-		ORDER BY name ASC
-	`
+func (s *FolderService) GetFolderContents(ctx context.Context, folderID *uuid.UUID, userID uuid.UUID) ([]Folder, []File, error) {
+	// Get child folders - filter by owner and parent folder
+	var foldersQuery string
+	var args []interface{}
 
-	folderRows, err := s.db.QueryContext(ctx, foldersQuery, folderID)
+	if folderID == nil {
+		// Root folder - get folders with no parent for this user
+		foldersQuery = `
+			SELECT id, name, parent_folder_id, owner_id, is_public, share_token,
+			       description, color, inherit_public, created_at, updated_at
+			FROM folders
+			WHERE parent_folder_id IS NULL 
+			  AND owner_id = $1
+			  AND deleted_at IS NULL
+			ORDER BY name ASC
+		`
+		args = []interface{}{userID}
+	} else {
+		// Child folder - get folders with this parent for this user
+		foldersQuery = `
+			SELECT id, name, parent_folder_id, owner_id, is_public, share_token,
+			       description, color, inherit_public, created_at, updated_at
+			FROM folders
+			WHERE parent_folder_id = $1 
+			  AND owner_id = $2
+			  AND deleted_at IS NULL
+			ORDER BY name ASC
+		`
+		args = []interface{}{*folderID, userID}
+	}
+
+	folderRows, err := s.db.QueryContext(ctx, foldersQuery, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -164,9 +184,7 @@ func (s *FolderService) GetFolderContents(ctx context.Context, folderID *uuid.UU
 		folders = append(folders, folder)
 	}
 
-	// Get files
-	// Temporarily return empty files array to fix the query error
-	// The files table columns need to be checked/fixed
+	// Get files - temporarily return empty array
 	var files []File
 
 	return folders, files, nil

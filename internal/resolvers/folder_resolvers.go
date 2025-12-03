@@ -58,20 +58,12 @@ func (r *queryResolver) Folders(ctx context.Context, parentID *string) ([]*model
 		parentUUID = &parsed
 	}
 
-	folders, _, err := r.FolderService.GetFolderContents(ctx, parentUUID)
+	folders, _, err := r.FolderService.GetFolderContents(ctx, parentUUID, userID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Filter folders by owner
-	var userFolders []services.Folder
-	for _, f := range folders {
-		if f.OwnerID == userID {
-			userFolders = append(userFolders, f)
-		}
-	}
-
-	return toGraphQLFolders(userFolders), nil
+	return toGraphQLFolders(folders), nil
 }
 
 func (r *queryResolver) FolderByPath(ctx context.Context, path string) (*model.Folder, error) {
