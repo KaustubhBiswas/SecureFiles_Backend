@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -277,7 +278,7 @@ func (s *FolderService) GetFolderStats(ctx context.Context, folderID uuid.UUID) 
 		)
 		SELECT 
 			COUNT(DISTINCT files.id)::BIGINT as total_files,
-			COALESCE(SUM(files.size), 0)::BIGINT as total_size
+			COALESCE(SUM(files.file_size), 0)::BIGINT as total_size
 		FROM folder_tree
 		LEFT JOIN files ON files.folder_id = folder_tree.id AND files.deleted_at IS NULL
 	`
@@ -294,6 +295,117 @@ func (s *FolderService) GetFolderStats(ctx context.Context, folderID uuid.UUID) 
 	}
 
 	return stats, nil
+}
+
+// GetFolderByShareToken retrieves a folder by its share token for public access
+func (s *FolderService) GetFolderByShareToken(ctx context.Context, shareToken string) (*Folder, error) {
+	query := `
+		SELECT id, name, parent_folder_id, owner_id, is_public, share_token, 
+		       description, color, inherit_public, created_at, updated_at
+		FROM folders
+		WHERE share_token = $1 AND deleted_at IS NULL AND is_public = true
+	`
+
+	folder := &Folder{}
+	err := s.db.QueryRowContext(ctx, query, shareToken).Scan(
+		&folder.ID, &folder.Name, &folder.ParentID, &folder.OwnerID,
+		&folder.IsPublic, &folder.ShareToken, &folder.Description,
+		&folder.Color, &folder.InheritPublic, &folder.CreatedAt, &folder.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return folder, nil
+}
+
+// GetPublicFolderContents retrieves subfolders and files for public folder access
+func (s *FolderService) GetPublicFolderContents(ctx context.Context, folderID uuid.UUID, subPath *string) ([]Folder, []File, error) {
+	// Navigate to subpath if provided
+	targetFolderID := folderID
+	if subPath != nil && *subPath != "" && *subPath != "/" {
+		// Parse path and navigate
+		pathParts := strings.Split(strings.Trim(*subPath, "/"), "/")
+		currentID := folderID
+
+		for _, part := range pathParts {
+			if part == "" {
+				continue
+			}
+
+			var nextID uuid.UUID
+			err := s.db.QueryRowContext(ctx, `
+				SELECT id FROM folders 
+				WHERE parent_folder_id = $1 AND name = $2 AND deleted_at IS NULL
+			`, currentID, part).Scan(&nextID)
+
+			if err != nil {
+				return nil, nil, fmt.Errorf("path not found: %s", *subPath)
+			}
+			currentID = nextID
+		}
+		targetFolderID = currentID
+	}
+
+	// Get child folders
+	foldersQuery := `
+		SELECT id, name, parent_folder_id, owner_id, is_public, share_token,
+		       description, color, inherit_public, created_at, updated_at
+		FROM folders
+		WHERE parent_folder_id = $1 AND deleted_at IS NULL AND (is_public = true OR inherit_public = true)
+		ORDER BY name ASC
+	`
+
+	folderRows, err := s.db.QueryContext(ctx, foldersQuery, targetFolderID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer folderRows.Close()
+
+	var folders []Folder
+	for folderRows.Next() {
+		var folder Folder
+		if err := folderRows.Scan(
+			&folder.ID, &folder.Name, &folder.ParentID, &folder.OwnerID,
+			&folder.IsPublic, &folder.ShareToken, &folder.Description,
+			&folder.Color, &folder.InheritPublic, &folder.CreatedAt, &folder.UpdatedAt,
+		); err != nil {
+			return nil, nil, err
+		}
+		folders = append(folders, folder)
+	}
+
+	// Get files in folder
+	filesQuery := `
+		SELECT id, filename, original_filename, file_size, 
+		       COALESCE((SELECT mime_type FROM blobs WHERE id = files.blob_id), 'application/octet-stream') as mime_type,
+		       is_public, description, folder_id, download_count, created_at, updated_at
+		FROM files
+		WHERE folder_id = $1 AND deleted_at IS NULL
+		ORDER BY original_filename ASC
+	`
+
+	fileRows, err := s.db.QueryContext(ctx, filesQuery, targetFolderID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer fileRows.Close()
+
+	var files []File
+	for fileRows.Next() {
+		var file File
+		if err := fileRows.Scan(
+			&file.ID, &file.Filename, &file.OriginalFilename, &file.Size,
+			&file.MimeType, &file.IsPublic, &file.Description, &file.FolderId,
+			&file.DownloadCount, &file.CreatedAt, &file.UpdatedAt,
+		); err != nil {
+			return nil, nil, err
+		}
+		files = append(files, file)
+	}
+
+	return folders, files, nil
 }
 
 // CreateFolder creates a new folder
@@ -500,6 +612,7 @@ type File struct {
 	MimeType         string
 	IsPublic         bool
 	Description      *string
+	FolderId         *uuid.UUID
 	DownloadCount    int
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

@@ -425,14 +425,97 @@ func toGraphQLFolders(folders []services.Folder) []*model.Folder {
 	return result
 }
 
+func toGraphQLFiles(files []services.File) []*model.File {
+	result := make([]*model.File, len(files))
+	for i, f := range files {
+		result[i] = toGraphQLFile(&f)
+	}
+	return result
+}
+
+func toGraphQLFile(f *services.File) *model.File {
+	file := &model.File{
+		ID:               f.ID.String(),
+		Filename:         f.Filename,
+		OriginalFilename: f.OriginalFilename,
+		Size:             int(f.Size),
+		MimeType:         f.MimeType,
+		IsPublic:         f.IsPublic,
+		DownloadCount:    f.DownloadCount,
+		CreatedAt:        f.CreatedAt,
+		UpdatedAt:        f.UpdatedAt,
+		Tags:             []string{},
+	}
+
+	if f.Description != nil {
+		file.Description = f.Description
+	}
+
+	if f.FolderId != nil {
+		folderIdStr := f.FolderId.String()
+		file.FolderID = &folderIdStr
+	}
+
+	return file
+}
+
 // Public Folder Resolvers
 
 func (r *queryResolver) PublicFolder(ctx context.Context, shareToken string) (*model.PublicFolderView, error) {
-	// For now, return a stub implementation
-	return nil, fmt.Errorf("PublicFolder not yet implemented")
+	// Get folder by share token
+	folder, err := r.FolderService.GetFolderByShareToken(ctx, shareToken)
+	if err != nil {
+		return nil, fmt.Errorf("folder not found or not public")
+	}
+
+	// Get folder stats
+	stats, err := r.FolderService.GetFolderStats(ctx, folder.ID)
+	if err != nil {
+		// Continue without stats
+		stats = &services.FolderStats{TotalFiles: 0, TotalSize: 0}
+	}
+
+	// Get breadcrumb path
+	path, err := r.FolderService.GetFolderPath(ctx, folder.ID)
+	if err != nil {
+		path = []services.Folder{}
+	}
+
+	return &model.PublicFolderView{
+		Folder:         toGraphQLFolder(folder),
+		Breadcrumbs:    toGraphQLFolders(path),
+		CanDownloadAll: true,
+		Stats: &model.FolderStats{
+			TotalFiles: int(stats.TotalFiles),
+			TotalSize:  int(stats.TotalSize),
+			FileTypes:  []*model.FileTypeCount{},
+		},
+	}, nil
 }
 
 func (r *queryResolver) PublicFolderContents(ctx context.Context, shareToken string, path *string) (*model.FolderContents, error) {
-	// For now, return a stub implementation
-	return nil, fmt.Errorf("PublicFolderContents not yet implemented")
+	// Get folder by share token
+	folder, err := r.FolderService.GetFolderByShareToken(ctx, shareToken)
+	if err != nil {
+		return nil, fmt.Errorf("folder not found or not public")
+	}
+
+	// Get contents
+	folders, files, err := r.FolderService.GetPublicFolderContents(ctx, folder.ID, path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate total size
+	var totalSize int64
+	for _, f := range files {
+		totalSize += f.Size
+	}
+
+	return &model.FolderContents{
+		Folders:   toGraphQLFolders(folders),
+		Files:     toGraphQLFiles(files),
+		TotalSize: int(totalSize),
+		ItemCount: len(folders) + len(files),
+	}, nil
 }

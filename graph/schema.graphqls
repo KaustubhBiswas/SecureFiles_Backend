@@ -91,6 +91,7 @@ type File {
   description: String
   tags: [String!]!
   downloadCount: Int!
+  folderId: ID
   createdAt: Time!
   updatedAt: Time!
 }

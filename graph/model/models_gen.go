@@ -87,6 +87,7 @@ type File struct {
 	Description      *string   `json:"description,omitempty"`
 	Tags             []string  `json:"tags"`
 	DownloadCount    int       `json:"downloadCount"`
+	FolderID         *string   `json:"folderId,omitempty"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 }

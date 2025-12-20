@@ -235,7 +235,7 @@ func (r *queryResolver) Files(ctx context.Context, folderID *string, limit *int,
         SELECT 
             f.id, f.filename, f.original_filename, f.file_size, f.is_public, 
             f.description, f.tags, f.download_count, f.created_at, f.updated_at,
-            b.mime_type
+            b.mime_type, f.folder_id
         FROM files f
         JOIN blobs b ON f.blob_id = b.id
         WHERE %s
@@ -260,6 +260,7 @@ func (r *queryResolver) Files(ctx context.Context, folderID *string, limit *int,
 		file := &model.File{}
 		var tags pq.StringArray
 		var description sql.NullString
+		var folderID sql.NullString
 
 		err := rows.Scan(
 			&file.ID,
@@ -273,6 +274,7 @@ func (r *queryResolver) Files(ctx context.Context, folderID *string, limit *int,
 			&file.CreatedAt,
 			&file.UpdatedAt,
 			&file.MimeType,
+			&folderID,
 		)
 		if err != nil {
 			log.Printf("❌ Failed to scan file: %v", err)
@@ -282,6 +284,9 @@ func (r *queryResolver) Files(ctx context.Context, folderID *string, limit *int,
 		// Handle nullable fields
 		if description.Valid {
 			file.Description = &description.String
+		}
+		if folderID.Valid {
+			file.FolderID = &folderID.String
 		}
 		file.Tags = []string(tags)
 		if file.Tags == nil {
