@@ -519,3 +519,101 @@ func (r *queryResolver) PublicFolderContents(ctx context.Context, shareToken str
 		ItemCount: len(folders) + len(files),
 	}, nil
 }
+
+// Folder Field Resolvers - Implementing computed fields
+
+// Path returns the breadcrumb path from root to this folder
+func (r *folderResolver) Path(ctx context.Context, obj *model.Folder) ([]*model.Folder, error) {
+	folderID, err := uuid.Parse(obj.ID)
+	if err != nil {
+		return []*model.Folder{}, nil
+	}
+
+	path, err := r.FolderService.GetFolderPath(ctx, folderID)
+	if err != nil {
+		return []*model.Folder{}, nil
+	}
+
+	return toGraphQLFolders(path), nil
+}
+
+// Children returns direct child folders
+func (r *folderResolver) Children(ctx context.Context, obj *model.Folder) ([]*model.Folder, error) {
+	folderID, err := uuid.Parse(obj.ID)
+	if err != nil {
+		return []*model.Folder{}, nil
+	}
+
+	userIDStr := auth.GetUserIDFromContext(ctx)
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return []*model.Folder{}, nil
+	}
+
+	folders, _, err := r.FolderService.GetFolderContents(ctx, &folderID, userID)
+	if err != nil {
+		return []*model.Folder{}, nil
+	}
+
+	return toGraphQLFolders(folders), nil
+}
+
+// Files returns files in this folder
+func (r *folderResolver) Files(ctx context.Context, obj *model.Folder) ([]*model.File, error) {
+	folderID, err := uuid.Parse(obj.ID)
+	if err != nil {
+		return []*model.File{}, nil
+	}
+
+	userIDStr := auth.GetUserIDFromContext(ctx)
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return []*model.File{}, nil
+	}
+
+	_, files, err := r.FolderService.GetFolderContents(ctx, &folderID, userID)
+	if err != nil {
+		return []*model.File{}, nil
+	}
+
+	return toGraphQLFiles(files), nil
+}
+
+// IsShared returns whether the folder has an active share link
+func (r *folderResolver) IsShared(ctx context.Context, obj *model.Folder) (bool, error) {
+	return obj.ShareToken != nil && *obj.ShareToken != "", nil
+}
+
+// CanAccess returns whether current user can access the folder
+func (r *folderResolver) CanAccess(ctx context.Context, obj *model.Folder) (bool, error) {
+	folderID, err := uuid.Parse(obj.ID)
+	if err != nil {
+		return false, nil
+	}
+
+	userIDStr := auth.GetUserIDFromContext(ctx)
+	var userID *uuid.UUID
+	if userIDStr != "" {
+		parsed, err := uuid.Parse(userIDStr)
+		if err == nil {
+			userID = &parsed
+		}
+	}
+
+	return r.FolderService.CanAccessFolder(ctx, folderID, userID), nil
+}
+
+// folderResolver is the resolver for Folder field resolvers
+type folderResolver struct{ *Resolver }
+
+// Folder returns the folder resolver
+func (r *Resolver) Folder() FolderResolver { return &folderResolver{r} }
+
+// FolderResolver interface (you may need to add this to the generated code)
+type FolderResolver interface {
+	Path(ctx context.Context, obj *model.Folder) ([]*model.Folder, error)
+	Children(ctx context.Context, obj *model.Folder) ([]*model.Folder, error)
+	Files(ctx context.Context, obj *model.Folder) ([]*model.File, error)
+	IsShared(ctx context.Context, obj *model.Folder) (bool, error)
+	CanAccess(ctx context.Context, obj *model.Folder) (bool, error)
+}

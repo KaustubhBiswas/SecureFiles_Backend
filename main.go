@@ -149,10 +149,17 @@ func main() {
 	}
 	defer database.Close()
 
+	// Configure connection pool to prevent prepared statement issues
+	database.SetMaxOpenConns(10)
+	database.SetMaxIdleConns(5)
+	database.SetConnMaxLifetime(0) // Connections don't expire
+
 	// Test connection
 	if err := database.Ping(); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
+
+	log.Printf("✅ Database connection pool configured successfully")
 
 	// Run database migrations
 	if err := runMigrations(database); err != nil {

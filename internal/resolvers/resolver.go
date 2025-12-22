@@ -209,12 +209,17 @@ func (r *queryResolver) Files(ctx context.Context, folderID *string, limit *int,
 	argIndex := 2
 
 	if folderID != nil {
-		whereClause += fmt.Sprintf(" AND f.folder_id = $%d", argIndex)
-		args = append(args, *folderID)
-		argIndex++
-	} else {
-		whereClause += " AND f.folder_id IS NULL" // Root folder only
+		if *folderID == "root" {
+			// Explicitly requesting root folder files only
+			whereClause += " AND f.folder_id IS NULL"
+		} else {
+			// Requesting files in a specific folder
+			whereClause += fmt.Sprintf(" AND f.folder_id = $%d", argIndex)
+			args = append(args, *folderID)
+			argIndex++
+		}
 	}
+	// If folderID is nil, return ALL files regardless of folder (for dashboard/stats)
 
 	// Debug: Log the user ID being used
 	log.Printf("🔍 Filtering files for user ID: %s", userID)

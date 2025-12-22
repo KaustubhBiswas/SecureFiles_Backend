@@ -185,8 +185,56 @@ func (s *FolderService) GetFolderContents(ctx context.Context, folderID *uuid.UU
 		folders = append(folders, folder)
 	}
 
-	// Get files - temporarily return empty array
+	// Get files in the folder
+	var filesQuery string
+	var fileArgs []interface{}
+
+	if folderID == nil {
+		// Root folder - get files with no folder_id for this user
+		filesQuery = `
+			SELECT id, filename, original_filename, file_size, 
+			       COALESCE((SELECT mime_type FROM blobs WHERE id = files.blob_id), 'application/octet-stream') as mime_type,
+			       is_public, description, folder_id, download_count, created_at, updated_at
+			FROM files
+			WHERE folder_id IS NULL 
+			  AND owner_id = $1
+			  AND deleted_at IS NULL
+			ORDER BY original_filename ASC
+		`
+		fileArgs = []interface{}{userID}
+	} else {
+		// Specific folder - get files in this folder for this user
+		filesQuery = `
+			SELECT id, filename, original_filename, file_size, 
+			       COALESCE((SELECT mime_type FROM blobs WHERE id = files.blob_id), 'application/octet-stream') as mime_type,
+			       is_public, description, folder_id, download_count, created_at, updated_at
+			FROM files
+			WHERE folder_id = $1 
+			  AND owner_id = $2
+			  AND deleted_at IS NULL
+			ORDER BY original_filename ASC
+		`
+		fileArgs = []interface{}{*folderID, userID}
+	}
+
+	fileRows, err := s.db.QueryContext(ctx, filesQuery, fileArgs...)
+	if err != nil {
+		return folders, nil, err
+	}
+	defer fileRows.Close()
+
 	var files []File
+	for fileRows.Next() {
+		var file File
+		if err := fileRows.Scan(
+			&file.ID, &file.Filename, &file.OriginalFilename, &file.Size,
+			&file.MimeType, &file.IsPublic, &file.Description, &file.FolderId,
+			&file.DownloadCount, &file.CreatedAt, &file.UpdatedAt,
+		); err != nil {
+			return folders, nil, err
+		}
+		files = append(files, file)
+	}
 
 	return folders, files, nil
 }
