@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -130,6 +132,13 @@ func (h *DownloadHandler) HandleFileDownload(w http.ResponseWriter, r *http.Requ
 
 	log.Printf("✅ File access granted: %s", file.OriginalFilename)
 
+	// Check if this is a range request (for video/audio streaming)
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader != "" {
+		h.handleRangeRequest(w, r, &file, claims.UserID, fileID)
+		return
+	}
+
 	if h.S3Service == nil {
 		log.Printf("❌ S3 service not available")
 		h.sendErrorResponse(w, "Storage service unavailable", http.StatusInternalServerError)
@@ -174,8 +183,9 @@ func (h *DownloadHandler) HandleFileDownload(w http.ResponseWriter, r *http.Requ
 	// Set CORS headers for cross-origin requests
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-	w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Type, Accept-Ranges")
+	w.Header().Set("Accept-Ranges", "bytes")
 
 	w.Header().Set("Content-Type", file.MimeType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.OriginalFilename))
@@ -288,6 +298,13 @@ func (h *DownloadHandler) HandlePublicFileDownload(w http.ResponseWriter, r *htt
 
 	log.Printf("📁 Processing public download for file: %s (size: %d bytes)", file.OriginalFilename, file.Size)
 
+	// Check if this is a range request (for video/audio streaming)
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader != "" {
+		h.handlePublicRangeRequest(w, r, &file, shareToken, fileID)
+		return
+	}
+
 	// Download file from S3
 	encryptedContent, err := h.S3Service.DownloadObject(file.S3Key)
 	if err != nil {
@@ -320,8 +337,9 @@ func (h *DownloadHandler) HandlePublicFileDownload(w http.ResponseWriter, r *htt
 	// Set CORS headers for cross-origin requests
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-	w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Type, Accept-Ranges")
+	w.Header().Set("Accept-Ranges", "bytes")
 
 	w.Header().Set("Content-Type", file.MimeType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.OriginalFilename))
@@ -367,4 +385,184 @@ func (h *DownloadHandler) sendErrorResponse(w http.ResponseWriter, message strin
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	json.NewEncoder(w).Encode(response)
+}
+
+// parseRangeHeader parses the Range header and returns start and end byte positions
+func (h *DownloadHandler) parseRangeHeader(rangeHeader string, fileSize int64) (start int64, end int64, err error) {
+	// Range header format: "bytes=start-end" or "bytes=start-"
+	if !strings.HasPrefix(rangeHeader, "bytes=") {
+		return 0, 0, fmt.Errorf("invalid range header format")
+	}
+
+	rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
+	parts := strings.Split(rangeSpec, "-")
+
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid range specification")
+	}
+
+	// Parse start position
+	if parts[0] != "" {
+		start, err = strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid start position: %v", err)
+		}
+	}
+
+	// Parse end position (optional)
+	if parts[1] != "" {
+		end, err = strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid end position: %v", err)
+		}
+	} else {
+		// If end is not specified, read to end of file
+		end = fileSize - 1
+	}
+
+	// Validate range
+	if start < 0 || end >= fileSize || start > end {
+		return 0, 0, fmt.Errorf("invalid range: start=%d, end=%d, fileSize=%d", start, end, fileSize)
+	}
+
+	return start, end, nil
+}
+
+// handleRangeRequest handles HTTP range requests for authenticated downloads
+func (h *DownloadHandler) handleRangeRequest(w http.ResponseWriter, r *http.Request, file *struct {
+	ID               string
+	Filename         string
+	OriginalFilename string
+	OwnerID          string
+	FileSize         int64
+	IsPublic         bool
+	BlobID           string
+	ContentHash      string
+	SizeBytes        int64
+	MimeType         string
+	S3Key            string
+	S3Bucket         string
+}, userID, fileID string) {
+	rangeHeader := r.Header.Get("Range")
+	log.Printf("📊 Processing range request: %s for file: %s", rangeHeader, file.OriginalFilename)
+
+	// Download and decrypt the full file first
+	// Note: For production, consider implementing byte-range decryption if possible
+	encryptedContent, err := h.S3Service.DownloadObject(file.S3Key)
+	if err != nil {
+		log.Printf("❌ Failed to download from S3: %v", err)
+		h.sendErrorResponse(w, "Failed to retrieve file", http.StatusInternalServerError)
+		return
+	}
+
+	originalContent, err := h.EncryptionService.DecryptFile(encryptedContent)
+	if err != nil {
+		log.Printf("❌ Failed to decrypt file: %v", err)
+		h.sendErrorResponse(w, "Failed to decrypt file", http.StatusInternalServerError)
+		return
+	}
+
+	fileSize := int64(len(originalContent))
+
+	// Parse range header
+	start, end, err := h.parseRangeHeader(rangeHeader, fileSize)
+	if err != nil {
+		log.Printf("❌ Invalid range header: %v", err)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
+		h.sendErrorResponse(w, "Invalid Range header", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+
+	contentLength := end - start + 1
+	log.Printf("✅ Serving range: bytes %d-%d/%d (%d bytes)", start, end, fileSize, contentLength)
+
+	// Update download count (only once per unique request)
+	_, err = h.DB.Exec("UPDATE files SET download_count = download_count + 1 WHERE id = $1", fileID)
+	if err != nil {
+		log.Printf("⚠️ Failed to update download count: %v", err)
+	}
+
+	// Set headers for partial content response
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Range, Content-Length, Content-Type, Accept-Ranges")
+	w.Header().Set("Content-Type", file.MimeType)
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", contentLength))
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.WriteHeader(http.StatusPartialContent) // 206
+
+	// Write the requested byte range
+	_, err = w.Write(originalContent[start : end+1])
+	if err != nil {
+		log.Printf("❌ Failed to write range response: %v", err)
+	}
+}
+
+// handlePublicRangeRequest handles HTTP range requests for public downloads
+func (h *DownloadHandler) handlePublicRangeRequest(w http.ResponseWriter, r *http.Request, file *struct {
+	ID               string
+	Filename         string
+	OriginalFilename string
+	Size             int64
+	MimeType         string
+	BlobID           string
+	S3Key            string
+	IsPublic         bool
+}, shareToken, fileID string) {
+	rangeHeader := r.Header.Get("Range")
+	log.Printf("📊 Processing public range request: %s for file: %s", rangeHeader, file.OriginalFilename)
+
+	// Download and decrypt the full file
+	encryptedContent, err := h.S3Service.DownloadObject(file.S3Key)
+	if err != nil {
+		log.Printf("❌ Failed to download from S3: %v", err)
+		h.sendErrorResponse(w, "Failed to retrieve file", http.StatusInternalServerError)
+		return
+	}
+
+	originalContent, err := h.EncryptionService.DecryptFile(encryptedContent)
+	if err != nil {
+		log.Printf("❌ Failed to decrypt file: %v", err)
+		h.sendErrorResponse(w, "Failed to decrypt file", http.StatusInternalServerError)
+		return
+	}
+
+	fileSize := int64(len(originalContent))
+
+	// Parse range header
+	start, end, err := h.parseRangeHeader(rangeHeader, fileSize)
+	if err != nil {
+		log.Printf("❌ Invalid range header: %v", err)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
+		h.sendErrorResponse(w, "Invalid Range header", http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+
+	contentLength := end - start + 1
+	log.Printf("✅ Serving public range: bytes %d-%d/%d (%d bytes)", start, end, fileSize, contentLength)
+
+	// Update download count
+	_, err = h.DB.Exec("UPDATE files SET download_count = download_count + 1 WHERE id = $1", fileID)
+	if err != nil {
+		log.Printf("⚠️ Failed to update download count: %v", err)
+	}
+
+	// Set headers for partial content response
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Range, Content-Length, Content-Type, Accept-Ranges")
+	w.Header().Set("Content-Type", file.MimeType)
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", contentLength))
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.WriteHeader(http.StatusPartialContent) // 206
+
+	// Write the requested byte range
+	_, err = w.Write(originalContent[start : end+1])
+	if err != nil {
+		log.Printf("❌ Failed to write range response: %v", err)
+	}
 }
