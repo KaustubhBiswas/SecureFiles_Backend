@@ -476,6 +476,28 @@ func (r *queryResolver) QuotaUsage(ctx context.Context) (*model.QuotaInfo, error
 		quotaUsed = actualUsage
 	}
 
+	// Always verify quotaUsed matches actual files; if not, recalculate and update DB
+	var actualUsage int64
+	err = r.DB.QueryRow(`
+		SELECT COALESCE(SUM(f.file_size), 0) 
+		FROM files f 
+		WHERE f.owner_id = $1 AND f.deleted_at IS NULL`, claims.UserID).Scan(&actualUsage)
+	if err != nil {
+		log.Printf("❌ Failed to verify actual usage: %v", err)
+	} else {
+		if actualUsage != quotaUsed {
+			log.Printf("🔍 Quota mismatch detected (stored=%d, actual=%d), syncing...", quotaUsed, actualUsage)
+			// Attempt to update the users table to reflect correct usage
+			_, updErr := r.DB.Exec("UPDATE users SET quota_used = $1 WHERE id = $2", actualUsage, claims.UserID)
+			if updErr != nil {
+				log.Printf("❌ Failed to update quota in database: %v", updErr)
+			} else {
+				log.Printf("✅ Synced quota in database: %d -> %d", quotaUsed, actualUsage)
+			}
+			quotaUsed = actualUsage
+		}
+	}
+
 	var percentage float64
 	if quotaLimit > 0 {
 		percentage = float64(quotaUsed) / float64(quotaLimit) * 100.0

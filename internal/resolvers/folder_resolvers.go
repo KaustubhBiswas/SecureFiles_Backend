@@ -2,7 +2,9 @@ package resolvers
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	"backend/graph/model"
@@ -10,6 +12,7 @@ import (
 	"backend/internal/services"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // Query Resolvers
@@ -284,9 +287,166 @@ func (r *mutationResolver) DeleteFolder(ctx context.Context, id string) (*model.
 		return nil, fmt.Errorf("invalid folder ID")
 	}
 
-	err = r.FolderService.DeleteFolder(ctx, folderID, userID)
+	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var ownerID uuid.UUID
+	err = tx.QueryRowContext(ctx, "SELECT owner_id FROM folders WHERE id = $1 AND deleted_at IS NULL", folderID).Scan(&ownerID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("folder not found")
+		}
+		return nil, fmt.Errorf("failed to load folder: %w", err)
+	}
+	if ownerID != userID {
+		return nil, fmt.Errorf("only owner can delete folder")
+	}
+
+	type fileRecord struct {
+		fileID string
+		size   int64
+		blobID string
+		s3Key  string
+	}
+
+	filesQuery := `
+		WITH RECURSIVE folder_tree AS (
+			SELECT id FROM folders WHERE id = $1 AND deleted_at IS NULL
+			UNION ALL
+			SELECT f.id FROM folders f
+			INNER JOIN folder_tree ft ON f.parent_folder_id = ft.id
+			WHERE f.deleted_at IS NULL
+		)
+		SELECT f.id, f.file_size, f.blob_id, b.s3_key
+		FROM files f
+		JOIN blobs b ON f.blob_id = b.id
+		WHERE f.deleted_at IS NULL
+		  AND f.owner_id = $2
+		  AND f.folder_id IN (SELECT id FROM folder_tree)
+	`
+
+	rows, err := tx.QueryContext(ctx, filesQuery, folderID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load folder files: %w", err)
+	}
+	defer rows.Close()
+
+	var files []fileRecord
+	var totalSize int64
+	blobKeyByID := make(map[string]string)
+
+	for rows.Next() {
+		var record fileRecord
+		if err := rows.Scan(&record.fileID, &record.size, &record.blobID, &record.s3Key); err != nil {
+			return nil, fmt.Errorf("failed to scan file record: %w", err)
+		}
+		files = append(files, record)
+		totalSize += record.size
+		if record.blobID != "" && record.s3Key != "" {
+			blobKeyByID[record.blobID] = record.s3Key
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read file records: %w", err)
+	}
+
+	now := time.Now()
+
+	_, err = tx.ExecContext(ctx, `
+		WITH RECURSIVE folder_tree AS (
+			SELECT id FROM folders WHERE id = $1 AND deleted_at IS NULL
+			UNION ALL
+			SELECT f.id FROM folders f
+			INNER JOIN folder_tree ft ON f.parent_folder_id = ft.id
+			WHERE f.deleted_at IS NULL
+		)
+		UPDATE files
+		SET deleted_at = $2
+		WHERE folder_id IN (SELECT id FROM folder_tree)
+		  AND owner_id = $3
+		  AND deleted_at IS NULL
+	`, folderID, now, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete folder files: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		WITH RECURSIVE folder_tree AS (
+			SELECT id FROM folders WHERE id = $1
+			UNION ALL
+			SELECT f.id FROM folders f
+			INNER JOIN folder_tree ft ON f.parent_folder_id = ft.id
+		)
+		UPDATE folders
+		SET deleted_at = $2
+		WHERE id IN (SELECT id FROM folder_tree)
+	`, folderID, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete folders: %w", err)
+	}
+
+	if totalSize > 0 {
+		_, err = tx.ExecContext(ctx, "UPDATE users SET quota_used = GREATEST(quota_used - $1, 0) WHERE id = $2", totalSize, userID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update quota: %w", err)
+		}
+	}
+
+	var blobIDs []string
+	for blobID := range blobKeyByID {
+		blobIDs = append(blobIDs, blobID)
+	}
+
+	remainingByBlob := make(map[string]int)
+	if len(blobIDs) > 0 {
+		countRows, err := tx.QueryContext(ctx, `
+			SELECT blob_id, COUNT(*)
+			FROM files
+			WHERE blob_id = ANY($1)
+			  AND deleted_at IS NULL
+			GROUP BY blob_id
+		`, pq.Array(blobIDs))
+		if err != nil {
+			return nil, fmt.Errorf("failed to check remaining blob references: %w", err)
+		}
+		defer countRows.Close()
+
+		for countRows.Next() {
+			var blobID string
+			var count int
+			if err := countRows.Scan(&blobID, &count); err != nil {
+				return nil, fmt.Errorf("failed to scan blob counts: %w", err)
+			}
+			remainingByBlob[blobID] = count
+		}
+		if err := countRows.Err(); err != nil {
+			return nil, fmt.Errorf("failed to read blob counts: %w", err)
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit folder deletion: %w", err)
+	}
+
+	var failedDeletes []string
+	for blobID, s3Key := range blobKeyByID {
+		if remainingByBlob[blobID] > 0 {
+			continue
+		}
+		if err := r.deleteStorageObject(s3Key); err != nil {
+			log.Printf("⚠️ Failed to delete storage object %s for blob %s: %v", s3Key, blobID, err)
+			failedDeletes = append(failedDeletes, s3Key)
+		}
+	}
+
+	if len(failedDeletes) > 0 {
+		return &model.DeleteResponse{
+			Success: false,
+			Message: "Folder deleted, but failed to remove some storage objects",
+		}, nil
 	}
 
 	return &model.DeleteResponse{
