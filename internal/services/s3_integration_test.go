@@ -26,40 +26,40 @@ func init() {
 	}
 }
 
-func TestS3ServiceRealIntegration(t *testing.T) {
+func TestB2ServiceRealIntegration(t *testing.T) {
 	// Skip if not running integration tests
 	if os.Getenv("RUN_INTEGRATION_TESTS") != "true" {
 		t.Skip("Skipping integration test. Set RUN_INTEGRATION_TESTS=true to run.")
 	}
 
-	// Check if S3 credentials are set
-	bucketName := os.Getenv("S3_BUCKET_NAME")
-	awsRegion := os.Getenv("AWS_REGION")
-	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
-	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	// Check if B2 credentials are set
+	bucketName := os.Getenv("B2_BUCKET_NAME")
+	b2Region := os.Getenv("B2_REGION")
+	keyID := os.Getenv("B2_KEY_ID")
+	applicationKey := os.Getenv("B2_APPLICATION_KEY")
 
 	t.Logf("Bucket Name: %s", bucketName)
-	t.Logf("AWS Region: %s", awsRegion)
-	if accessKey != "" {
-		t.Logf("Access Key: %s***", accessKey[:4]) // Only show first 4 chars for security
+	t.Logf("B2 Region: %s", b2Region)
+	if keyID != "" {
+		t.Logf("Key ID: %s***", keyID[:4]) // Only show first 4 chars for security
 	}
-	if secretKey != "" {
-		t.Logf("Secret Key: %s*** (length: %d)", secretKey[:4], len(secretKey))
+	if applicationKey != "" {
+		t.Logf("Application Key: %s*** (length: %d)", applicationKey[:4], len(applicationKey))
 	}
 
 	if bucketName == "" {
-		t.Skip("Skipping integration test. S3_BUCKET_NAME environment variable not set.")
+		t.Skip("Skipping integration test. B2_BUCKET_NAME environment variable not set.")
 	}
 
-	if accessKey == "" || secretKey == "" {
-		t.Skip("Skipping integration test. AWS credentials not set.")
+	if keyID == "" || applicationKey == "" {
+		t.Skip("Skipping integration test. B2 credentials not set.")
 	}
 
-	// Setup S3 service
-	s3Service, err := NewS3Service()
-	require.NoError(t, err, "Should be able to create S3 service with loaded credentials")
+	// Setup B2 service
+	b2Service, err := NewB2Service()
+	require.NoError(t, err, "Should be able to create B2 service with loaded credentials")
 
-	t.Logf("S3 Service created successfully with bucket: %s", s3Service.GetBucketName())
+	t.Logf("B2 Service created successfully with bucket: %s", b2Service.GetBucketName())
 
 	// Test content
 	testContent := []byte(fmt.Sprintf("Integration test content - %d", time.Now().Unix()))
@@ -71,30 +71,30 @@ func TestS3ServiceRealIntegration(t *testing.T) {
 	// This test assumes you have manually uploaded a file
 	testKey := "test-integration/hash-test.txt"
 
-	t.Logf("Testing with S3 key: %s", testKey)
+	t.Logf("Testing with B2 key: %s", testKey)
 
 	// Test if object exists
-	exists, err := s3Service.ObjectExists(testKey)
+	exists, err := b2Service.ObjectExists(testKey)
 	if err != nil {
 		t.Logf("Error checking if object exists: %v", err)
 		// Don't skip here, continue to show what the error was
 	}
 	if !exists {
-		t.Skip("Test file does not exist in S3. Upload manually first.")
+		t.Skip("Test file does not exist in B2. Upload manually first.")
 	}
 
 	// Test hash computation
-	actualHash, err := s3Service.ComputeObjectHash(testKey)
+	actualHash, err := b2Service.ComputeObjectHash(testKey)
 	if err != nil {
 		t.Logf("Error computing hash: %v", err)
 		return
 	}
 
-	t.Logf("Actual hash from S3: %s", actualHash)
+	t.Logf("Actual hash from B2: %s", actualHash)
 	assert.Equal(t, 64, len(actualHash), "Hash should be 64 characters")
 
 	// Test stream method
-	streamHash, err := s3Service.ComputeObjectHashStream(testKey)
+	streamHash, err := b2Service.ComputeObjectHashStream(testKey)
 	if err != nil {
 		t.Logf("Error computing stream hash: %v", err)
 		return

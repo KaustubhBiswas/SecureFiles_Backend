@@ -1,14 +1,14 @@
 # File Storage Backend with GraphQL API
 
-A secure file storage backend built with Go, GraphQL, PostgreSQL, and AWS S3. Features include file encryption, deduplication, user authentication, quota management, and presigned URL uploads.
+A secure file storage backend built with Go, GraphQL, PostgreSQL, and Backblaze B2 (S3-compatible). Features include file encryption, deduplication, user authentication, quota management, and presigned URL uploads.
 
 ## 🚀 Features
 
-- **Secure File Storage**: Files are encrypted before storing in S3
+- **Secure File Storage**: Files are encrypted before storing in Backblaze B2
 - **File Deduplication**: Identical files share storage space
 - **User Authentication**: JWT-based authentication system  
 - **Quota Management**: Track and limit user storage usage
-- **Presigned URLs**: Direct S3 uploads with temporary URLs
+- **Presigned URLs**: Direct B2 uploads with temporary URLs
 - **GraphQL API**: Modern API with type-safe queries and mutations
 - **Rate Limiting**: Protection against API abuse
 - **File Downloads**: Secure downloads with decryption
@@ -46,7 +46,7 @@ backend/
 
 - **Go 1.19+**
 - **PostgreSQL 12+**
-- **AWS S3 Bucket**
+- **Backblaze B2 Bucket (S3-compatible)**
 - **Docker** (optional)
 
 ## ⚙️ Environment Setup
@@ -78,12 +78,13 @@ backend/
    # Encryption
    ENCRYPTION_MASTER_KEY="your-32-byte-base64-encryption-key"
    
-   # AWS S3 Configuration
-   AWS_ACCESS_KEY_ID=your_access_key
-   AWS_SECRET_ACCESS_KEY=your_secret_access_key
-   AWS_REGION=us-east-1
-   S3_BUCKET_NAME=your-bucket-name
-   S3_PRESIGNED_URL_EXPIRES=3600
+  # Backblaze B2 Configuration (S3-compatible)
+  STORAGE_PROVIDER=b2
+  B2_S3_ENDPOINT=https://s3.<region>.backblazeb2.com
+  B2_BUCKET_NAME=your-b2-bucket
+  B2_KEY_ID=your_b2_key_id
+  B2_APPLICATION_KEY=your_b2_application_key
+  B2_REGION=<region>
    
    # Server Configuration
    PORT=8080
@@ -428,10 +429,10 @@ curl -H "Authorization: Bearer $JWT_TOKEN" \
    - Verify DB_URL in .env file
    - Ensure database exists
 
-2. **"S3 operation failed"**
-   - Verify AWS credentials
-   - Check S3 bucket exists and is accessible
-   - Confirm AWS region settings
+2. **"B2 operation failed"**
+  - Verify B2 key ID and application key
+  - Check the B2 bucket exists and is accessible
+  - Confirm B2 endpoint and region settings
 
 3. **"Encryption service not available"**
    - Ensure ENCRYPTION_MASTER_KEY is set in .env
@@ -680,7 +681,7 @@ type AuthResponse {
 ```graphql
 type UploadResponse {
   uploadId: ID!              # Upload session identifier
-  uploadUrl: String!         # Presigned S3 URL for upload
+  uploadUrl: String!         # Presigned B2 URL for upload
   expiresAt: Time!           # URL expiration time
   maxFileSize: Int!          # Maximum allowed file size
 }
@@ -1345,7 +1346,7 @@ Response:
   "status": "ok",
   "timestamp": "2024-01-15T10:30:00Z",
   "database": "connected",
-  "s3": "connected"
+  "b2": "connected"
 }
 ```
 
@@ -1371,7 +1372,7 @@ Rate limit headers included in responses:
 - **File Encryption**: All files encrypted at rest using AES-256
 - **Access Control**: Role-based permissions (USER/ADMIN)
 - **Rate Limiting**: Protection against API abuse
-- **Presigned URLs**: Secure direct S3 uploads/downloads
+- **Presigned URLs**: Secure direct B2 uploads/downloads
 - **Input Validation**: Comprehensive request validation
 - **CORS Protection**: Configurable cross-origin policies
 

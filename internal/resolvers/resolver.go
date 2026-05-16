@@ -23,19 +23,42 @@ func stringPtr(s string) *string {
 	return &s
 }
 
+func (r *Resolver) deleteStorageObject(s3Key string) error {
+	if r.StorageService == nil {
+		return fmt.Errorf("storage service unavailable")
+	}
+
+	key := strings.TrimSpace(s3Key)
+	if key == "" || key == "legacy-key" {
+		return fmt.Errorf("invalid storage key")
+	}
+
+	if err := r.StorageService.DeleteObject(key); err != nil {
+		exists, existsErr := r.StorageService.ObjectExists(key)
+		if existsErr != nil {
+			return fmt.Errorf("delete failed: %v; verification failed: %v", err, existsErr)
+		}
+		if exists {
+			return fmt.Errorf("object still exists after delete: %v", err)
+		}
+	}
+
+	return nil
+}
+
 type Resolver struct {
 	DB                *sql.DB
-	S3Service         *services.S3Service
+	StorageService    services.ObjectStorage
 	EncryptionService *services.EncryptionService
 	FolderService     *services.FolderService
 	BaseURL           string
 	FrontendURL       string
 }
 
-func NewResolver(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService, folderService *services.FolderService, baseURL string, frontendURL string) *Resolver {
+func NewResolver(db *sql.DB, storageService services.ObjectStorage, encryptionService *services.EncryptionService, folderService *services.FolderService, baseURL string, frontendURL string) *Resolver {
 	return &Resolver{
 		DB:                db,
-		S3Service:         s3Service,
+		StorageService:    storageService,
 		EncryptionService: encryptionService,
 		FolderService:     folderService,
 		BaseURL:           baseURL,
@@ -681,11 +704,11 @@ func (r *mutationResolver) RequestUpload(ctx context.Context, input model.Upload
 		fileExtension = getExtensionFromMimeType(input.MimeType)
 	}
 
-	// Generate S3 key
+	// Generate storage key
 	s3Key := fmt.Sprintf("uploads/%s/%s%s", claims.UserID, uploadID, fileExtension)
 
 	// Generate presigned URL for upload (1 hour expiry)
-	uploadURL, err := r.S3Service.GeneratePresignedUploadURL(s3Key, input.MimeType)
+	uploadURL, err := r.StorageService.GeneratePresignedUploadURL(s3Key, input.MimeType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate upload URL: %v", err)
 	}
@@ -771,8 +794,8 @@ func (r *mutationResolver) ConfirmUpload(ctx context.Context, uploadID string) (
 		return nil, fmt.Errorf("upload request expired")
 	}
 
-	// Check if file exists in S3
-	exists, err := r.S3Service.ObjectExists(s3Key)
+	// Check if file exists in B2
+	exists, err := r.StorageService.ObjectExists(s3Key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check file in storage: %v", err)
 	}
@@ -782,7 +805,7 @@ func (r *mutationResolver) ConfirmUpload(ctx context.Context, uploadID string) (
 	}
 
 	// Get file size and compute hash
-	hash, size, err := r.S3Service.ComputeObjectHashAndSize(s3Key)
+	hash, size, err := r.StorageService.ComputeObjectHashAndSize(s3Key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute content hash: %v", err)
 	}
@@ -803,7 +826,7 @@ func (r *mutationResolver) ConfirmUpload(ctx context.Context, uploadID string) (
 	}
 
 	if currentQuotaUsed+size > quotaLimit {
-		r.S3Service.DeleteObject(s3Key) // Clean up uploaded file
+		r.StorageService.DeleteObject(s3Key) // Clean up uploaded file
 		return nil, fmt.Errorf("insufficient quota: file size %d bytes would exceed available quota of %d bytes",
 			size, quotaLimit-currentQuotaUsed)
 	}
@@ -816,8 +839,8 @@ func (r *mutationResolver) ConfirmUpload(ctx context.Context, uploadID string) (
 		// New unique file - need to encrypt and store
 		log.Printf("New unique file - downloading, encrypting, and storing...")
 
-		// Download the uploaded file from S3
-		uploadedContent, err := r.S3Service.DownloadObject(s3Key)
+		// Download the uploaded file from B2
+		uploadedContent, err := r.StorageService.DownloadObject(s3Key)
 		if err != nil {
 			return nil, fmt.Errorf("failed to download uploaded file: %v", err)
 		}
@@ -828,17 +851,17 @@ func (r *mutationResolver) ConfirmUpload(ctx context.Context, uploadID string) (
 			return nil, fmt.Errorf("failed to encrypt file: %v", err)
 		}
 
-		// Generate new S3 key for encrypted storage
+		// Generate new storage key for encrypted storage
 		encryptedS3Key := fmt.Sprintf("encrypted/%s/%s", claims.UserID, uploadID)
 
-		// Upload encrypted content to S3
-		err = r.S3Service.UploadEncryptedObject(encryptedS3Key, encryptedContent, "application/octet-stream")
+		// Upload encrypted content to B2
+		err = r.StorageService.UploadEncryptedObject(encryptedS3Key, encryptedContent, "application/octet-stream")
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload encrypted file: %v", err)
 		}
 
 		// Delete the original unencrypted file
-		r.S3Service.DeleteObject(s3Key)
+		r.StorageService.DeleteObject(s3Key)
 
 		// Create new blob record
 		err = tx.QueryRow(`
@@ -846,7 +869,7 @@ func (r *mutationResolver) ConfirmUpload(ctx context.Context, uploadID string) (
                              storage_path, compression_type, upload_status, uploaded_at, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, 'AES256', 'UPLOADED', NOW(), NOW())
             RETURNING id`,
-			hash, size, mimeType, encryptedS3Key, r.S3Service.GetBucketName(), encryptedS3Key).Scan(&blobID)
+			hash, size, mimeType, encryptedS3Key, r.StorageService.GetBucketName(), encryptedS3Key).Scan(&blobID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create blob record: %v", err)
 		}
@@ -858,8 +881,8 @@ func (r *mutationResolver) ConfirmUpload(ctx context.Context, uploadID string) (
 		// File with same content already exists - deduplication
 		log.Printf("File with same content hash already exists: %s (blob_id: %s)", hash, blobID)
 		// Delete the newly uploaded file since we already have this content
-		r.S3Service.DeleteObject(s3Key)
-		log.Printf("Deleted duplicate file from S3: %s", s3Key)
+		r.StorageService.DeleteObject(s3Key)
+		log.Printf("Deleted duplicate file from B2: %s", s3Key)
 	}
 
 	// Create file record
@@ -1041,21 +1064,19 @@ func (r *mutationResolver) DeleteFile(ctx context.Context, id string) (*model.De
 	log.Printf("✅ Database operations completed successfully")
 
 	// Now delete from S3 if needed (outside transaction to avoid long-running transactions)
-	if shouldDeleteFromS3 && r.S3Service != nil {
-		log.Printf("🗑️ Deleting encrypted file from S3: %s", s3Key)
-
-		err = r.S3Service.DeleteObject(s3Key)
+	if shouldDeleteFromS3 {
+		log.Printf("🗑️ Deleting encrypted file from B2: %s", s3Key)
+		err = r.deleteStorageObject(s3Key)
 		if err != nil {
-			log.Printf("⚠️ Failed to delete file from S3 (file deleted from database): %v", err)
-			// Don't fail the operation - file is already deleted from database
-			// S3 cleanup can be handled by a background job
-		} else {
-			log.Printf("✅ File successfully deleted from S3: %s", s3Key)
+			log.Printf("⚠️ Failed to delete file from B2 (file deleted from database): %v", err)
+			return &model.DeleteResponse{
+				Success: false,
+				Message: "File deleted, but failed to remove encrypted object from storage",
+			}, nil
 		}
-	} else if !shouldDeleteFromS3 {
-		log.Printf("♻️ Blob %s still referenced by other files, keeping in S3", blobID)
+		log.Printf("✅ File successfully deleted from B2: %s", s3Key)
 	} else {
-		log.Printf("⚠️ S3 service not available, file not deleted from storage")
+		log.Printf("♻️ Blob %s still referenced by other files, keeping in B2", blobID)
 	}
 
 	log.Printf("🎉 File deletion completed: %s (freed %d bytes from quota)", id, fileSize)
@@ -1901,11 +1922,15 @@ func (r *mutationResolver) AdminDeleteFile(ctx context.Context, fileID string) (
 	}
 
 	// Delete from S3 if needed (outside transaction)
-	if remainingFileCount == 0 && r.S3Service != nil {
-		log.Printf("🗑️ Admin deleting file from S3: %s", s3Key)
-		err = r.S3Service.DeleteObject(s3Key)
+	if remainingFileCount == 0 {
+		log.Printf("🗑️ Admin deleting file from B2: %s", s3Key)
+		err = r.deleteStorageObject(s3Key)
 		if err != nil {
-			log.Printf("⚠️ Failed to delete file from S3: %v", err)
+			log.Printf("⚠️ Failed to delete file from B2: %v", err)
+			return &model.DeleteResponse{
+				Success: false,
+				Message: "File deleted, but failed to remove encrypted object from storage",
+			}, nil
 		}
 	}
 

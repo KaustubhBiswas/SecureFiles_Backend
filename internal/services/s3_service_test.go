@@ -32,7 +32,7 @@ func TestComputeObjectHashWithMock(t *testing.T) {
 	testContent := []byte("Hello, World! This is test content for hashing.")
 	expectedHash := fmt.Sprintf("%x", sha256.Sum256(testContent))
 
-	// Create a test that doesn't require real S3
+	// Create a test that doesn't require real B2
 	actualHash := fmt.Sprintf("%x", sha256.Sum256(testContent))
 
 	assert.Equal(t, expectedHash, actualHash)

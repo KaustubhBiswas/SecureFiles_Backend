@@ -101,8 +101,8 @@ type MockDB struct {
 	*sql.DB
 }
 
-// MockS3Service is a mock S3 service for testing
-type MockS3Service struct {
+// MockStorageService is a mock storage service for testing
+type MockStorageService struct {
 	testData []byte
 }
 
@@ -132,8 +132,8 @@ func TestRangeRequestIntegration(t *testing.T) {
 	encryptedContent, _ := (&MockEncryptionService{}).EncryptFile(testContent)
 
 	// Setup mock services
-	mockS3 := &MockS3Service{testData: encryptedContent}
-	_ = mockS3 // Use the variable
+	mockStorage := &MockStorageService{testData: encryptedContent}
+	_ = mockStorage // Use the variable
 
 	// Note: In a real test, you'd need a test database connection
 	// For now, this demonstrates the test structure

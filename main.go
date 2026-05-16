@@ -166,15 +166,15 @@ func main() {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
-	// Initialize services
-	s3Service, err := services.NewS3Service()
+	// Initialize storage service
+	storageService, storageProvider, err := services.NewStorageServiceFromEnv()
 	if err != nil {
-		log.Printf("❌ Failed to initialize S3 service: %v", err)
-		log.Printf("⚠️ Uploads will not work without S3 service")
-		// Don't exit - continue without S3 service for now
-		s3Service = nil
+		log.Printf("❌ Failed to initialize storage service: %v", err)
+		log.Printf("⚠️ Uploads will not work without storage service")
+		// Don't exit - continue without storage service for now
+		storageService = nil
 	} else {
-		log.Printf("✅ S3 service initialized successfully")
+		log.Printf("✅ Storage service initialized successfully (%s)", storageProvider)
 	}
 
 	// Initialize encryption service with proper parameters
@@ -221,24 +221,24 @@ func main() {
 	log.Printf("✅ Folder service initialized successfully")
 
 	// Initialize resolver with all services
-	resolver := resolvers.NewResolver(database, s3Service, encryptionService, folderService, baseURL, frontendURL)
+	resolver := resolvers.NewResolver(database, storageService, encryptionService, folderService, baseURL, frontendURL)
 
-	// Initialize upload handler - only if S3 service is available
+	// Initialize upload handler - only if storage service is available
 	var uploadHandler *handlers.UploadHandler
-	if s3Service != nil {
-		uploadHandler = handlers.NewUploadHandler(database, s3Service, encryptionService)
+	if storageService != nil {
+		uploadHandler = handlers.NewUploadHandler(database, storageService, encryptionService)
 		log.Printf("✅ Upload handler initialized")
 	} else {
-		log.Printf("⚠️ Upload handler not initialized - S3 service unavailable")
+		log.Printf("⚠️ Upload handler not initialized - storage service unavailable")
 	}
 
-	// Initialize download handler - only if S3 service is available
+	// Initialize download handler - only if storage service is available
 	var downloadHandler *handlers.DownloadHandler
-	if s3Service != nil && encryptionService != nil {
-		downloadHandler = handlers.NewDownloadHandler(database, s3Service, encryptionService)
+	if storageService != nil && encryptionService != nil {
+		downloadHandler = handlers.NewDownloadHandler(database, storageService, encryptionService)
 		log.Printf("✅ Download handler initialized")
 	} else {
-		log.Printf("⚠️ Download handler not initialized - S3 service or encryption service unavailable")
+		log.Printf("⚠️ Download handler not initialized - storage service or encryption service unavailable")
 	}
 
 	// Create GraphQL server WITHOUT auth middleware
@@ -257,7 +257,7 @@ func main() {
 	log.Printf("🎮 GraphQL playground: /graphql")
 
 	// Initialize PUBLIC GraphQL handler
-	publicGraphQLHandler := handlers.NewPublicGraphQLHandler(database, s3Service, encryptionService, folderService, baseURL, frontendURL)
+	publicGraphQLHandler := handlers.NewPublicGraphQLHandler(database, storageService, encryptionService, folderService, baseURL, frontendURL)
 
 	// Add PUBLIC routes
 	publicRoutes := router.PathPrefix("/public").Subrouter()
@@ -289,9 +289,9 @@ func main() {
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok","services":{"database":"connected","s3":"` +
+		w.Write([]byte(`{"status":"ok","services":{"database":"connected","b2":"` +
 			func() string {
-				if s3Service != nil {
+				if storageService != nil {
 					return "connected"
 				}
 				return "disconnected"

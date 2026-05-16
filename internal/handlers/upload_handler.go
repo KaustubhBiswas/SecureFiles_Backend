@@ -12,6 +12,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ import (
 
 type UploadHandler struct {
 	DB                *sql.DB
-	S3Service         *services.S3Service
+	StorageService    services.ObjectStorage
 	EncryptionService *services.EncryptionService
 }
 
@@ -34,10 +35,10 @@ type UploadResponse struct {
 	Error       string `json:"error,omitempty"`
 }
 
-func NewUploadHandler(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService) *UploadHandler {
+func NewUploadHandler(db *sql.DB, storageService services.ObjectStorage, encryptionService *services.EncryptionService) *UploadHandler {
 	return &UploadHandler{
 		DB:                db,
-		S3Service:         s3Service,
+		StorageService:    storageService,
 		EncryptionService: encryptionService,
 	}
 }
@@ -163,7 +164,7 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 	blobID := uuid.New().String()
 	ext := filepath.Ext(header.Filename)
 
-	// Generate S3 key using original content hash but store as encrypted blob
+	// Generate storage key using original content hash but store as encrypted blob
 	// Use .enc extension to indicate encrypted content
 	s3Key := fmt.Sprintf("encrypted/%s/%s.enc", originalContentHash[:2], originalContentHash)
 
@@ -225,75 +226,100 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	log.Printf("📋 File details: ID=%s, Hash=%s, OriginalMIME=%s, S3Key=%s",
+	log.Printf("📋 File details: ID=%s, Hash=%s, OriginalMIME=%s, StorageKey=%s",
 		fileID, originalContentHash, originalMimeType, s3Key)
 
-	if h.S3Service == nil {
-		log.Printf("❌ S3 service not available")
+	if h.StorageService == nil {
+		log.Printf("❌ Storage service not available")
 		h.sendErrorResponse(w, "Storage service unavailable", http.StatusInternalServerError)
 		return
 	}
 
-	// Check if encrypted blob with same hash already exists in S3
-	bucketName := h.S3Service.GetBucketName()
-	objectExists, err := h.S3Service.ObjectExists(s3Key)
+	// Check if encrypted blob with same hash already exists in B2
+	bucketName := h.StorageService.GetBucketName()
+	objectExists, err := h.StorageService.ObjectExists(s3Key)
 	if err != nil {
-		log.Printf("⚠️ Failed to check S3 object existence: %v", err)
+		log.Printf("⚠️ Failed to check B2 object existence: %v", err)
 		objectExists = false // Continue with upload
 	}
 
-	var s3URL string
+	var storageURL string
 	now := time.Now()
+	endpoint := strings.TrimSuffix(os.Getenv("B2_S3_ENDPOINT"), "/")
 
 	if objectExists {
-		log.Printf("♻️ Encrypted file with same content hash already exists in S3: %s", s3Key)
-		s3URL = fmt.Sprintf("https://%s.s3.amazonaws.com/%s", bucketName, s3Key)
+		log.Printf("♻️ Encrypted file with same content hash already exists in B2: %s", s3Key)
+		if endpoint != "" {
+			storageURL = fmt.Sprintf("%s/%s/%s", endpoint, bucketName, s3Key)
+		} else {
+			storageURL = fmt.Sprintf("b2://%s/%s", bucketName, s3Key)
+		}
 	} else {
-		// Upload ENCRYPTED content to S3 with binary MIME type
-		log.Printf("🚀 Uploading ENCRYPTED file to S3: %s", s3Key)
+		// Upload ENCRYPTED content to B2 with binary MIME type
+		log.Printf("🚀 Uploading ENCRYPTED file to B2: %s", s3Key)
 
-		err = h.S3Service.UploadObject(s3Key, encryptedFileContent, "application/octet-stream")
+		err = h.StorageService.UploadObject(s3Key, encryptedFileContent, "application/octet-stream")
 		if err != nil {
-			log.Printf("❌ Failed to upload encrypted file to S3: %v", err)
+			log.Printf("❌ Failed to upload encrypted file to B2: %v", err)
 			h.sendErrorResponse(w, "Failed to upload file to storage", http.StatusInternalServerError)
 			return
 		}
 
-		s3URL = fmt.Sprintf("https://%s.s3.amazonaws.com/%s", bucketName, s3Key)
-		log.Printf("✅ Encrypted file uploaded to S3: %s", s3URL)
+		if endpoint != "" {
+			storageURL = fmt.Sprintf("%s/%s/%s", endpoint, bucketName, s3Key)
+		} else {
+			storageURL = fmt.Sprintf("b2://%s/%s", bucketName, s3Key)
+		}
+		log.Printf("✅ Encrypted file uploaded to B2: %s", storageURL)
 	}
 
-	// Insert blob record (store info about original file)
-	blobQuery := `
-        INSERT INTO blobs (id, content_hash, size_bytes, mime_type, storage_path, compression_type, created_at, s3_key, s3_bucket, upload_status, uploaded_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-    `
-
-	_, err = h.DB.Exec(blobQuery,
-		blobID,                          // $1 - id
-		originalContentHash,             // $2 - content_hash (hash of ORIGINAL content)
-		int64(len(originalFileContent)), // $3 - size_bytes (ORIGINAL file size)
-		originalMimeType,                // $4 - mime_type (ORIGINAL MIME type)
-		s3URL,                           // $5 - storage_path (S3 URL of encrypted file)
-		"AES256",                        // $6 - compression_type (indicate encryption)
-		now,                             // $7 - created_at
-		s3Key,                           // $8 - s3_key (encrypted file key)
-		bucketName,                      // $9 - s3_bucket
-		"UPLOADED",                      // $10 - upload_status
-		now,                             // $11 - uploaded_at
-	)
-
-	if err != nil {
-		log.Printf("❌ Failed to insert blob record: %v", err)
-		// Clean up S3 object if we just uploaded it and no one else references it
-		if !objectExists {
-			h.S3Service.DeleteObject(s3Key)
-		}
+	// Insert or reuse blob record (store info about original file)
+	var existingBlobID string
+	blobReused := false
+	if err := h.DB.QueryRow("SELECT id FROM blobs WHERE content_hash = $1", originalContentHash).Scan(&existingBlobID); err == nil {
+		blobID = existingBlobID
+		blobReused = true
+		log.Printf("♻️ Found existing blob for content hash: %s", blobID)
+	} else if err != sql.ErrNoRows {
+		log.Printf("❌ Failed to check existing blob: %v", err)
 		h.sendErrorResponse(w, "Failed to save file metadata", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("✅ Blob record created: %s", blobID)
+	blobQuery := `
+        INSERT INTO blobs (id, content_hash, size_bytes, mime_type, storage_path, compression_type, created_at, s3_key, s3_bucket, upload_status, uploaded_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (content_hash) DO UPDATE SET content_hash = blobs.content_hash
+        RETURNING id
+    `
+
+	if !blobReused {
+		err = h.DB.QueryRow(blobQuery,
+			blobID,                          // $1 - id
+			originalContentHash,             // $2 - content_hash (hash of ORIGINAL content)
+			int64(len(originalFileContent)), // $3 - size_bytes (ORIGINAL file size)
+			originalMimeType,                // $4 - mime_type (ORIGINAL MIME type)
+			storageURL,                      // $5 - storage_path (B2 URL of encrypted file)
+			"AES256",                        // $6 - compression_type (indicate encryption)
+			now,                             // $7 - created_at
+			s3Key,                           // $8 - s3_key (encrypted file key)
+			bucketName,                      // $9 - s3_bucket
+			"UPLOADED",                      // $10 - upload_status
+			now,                             // $11 - uploaded_at
+		).Scan(&blobID)
+
+		if err != nil {
+			log.Printf("❌ Failed to insert blob record: %v", err)
+			// Clean up B2 object if we just uploaded it and no one else references it
+			if !objectExists {
+				h.StorageService.DeleteObject(s3Key)
+			}
+			h.sendErrorResponse(w, "Failed to save file metadata", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("✅ Blob record created: %s", blobID)
+	}
 
 	// Insert file record (with original file info)
 	fileQuery := `
@@ -321,10 +347,12 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 
 	if err != nil {
 		log.Printf("❌ Failed to insert file record: %v", err)
-		// Clean up blob record and S3 object
-		h.DB.Exec("DELETE FROM blobs WHERE id = $1", blobID)
-		if !objectExists {
-			h.S3Service.DeleteObject(s3Key)
+		// Clean up blob record and B2 object if this blob was newly created
+		if !blobReused {
+			h.DB.Exec("DELETE FROM blobs WHERE id = $1", blobID)
+			if !objectExists {
+				h.StorageService.DeleteObject(s3Key)
+			}
 		}
 		h.sendErrorResponse(w, "Failed to save file metadata", http.StatusInternalServerError)
 		return
@@ -334,22 +362,24 @@ func (h *UploadHandler) HandleFileUpload(w http.ResponseWriter, r *http.Request)
 	_, err = h.DB.Exec("UPDATE users SET quota_used = quota_used + $1 WHERE id = $2", originalFileSize, claims.UserID)
 	if err != nil {
 		log.Printf("❌ Failed to update user quota: %v", err)
-		// Clean up file and blob records and S3 object
+		// Clean up file and blob records and B2 object
 		h.DB.Exec("DELETE FROM files WHERE id = $1", fileID)
-		h.DB.Exec("DELETE FROM blobs WHERE id = $1", blobID)
-		if !objectExists {
-			h.S3Service.DeleteObject(s3Key)
+		if !blobReused {
+			h.DB.Exec("DELETE FROM blobs WHERE id = $1", blobID)
+			if !objectExists {
+				h.StorageService.DeleteObject(s3Key)
+			}
 		}
 		h.sendErrorResponse(w, "Failed to update quota", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("✅ File uploaded successfully: %s (blob: %s, hash: %s) - ENCRYPTED IN S3, quota updated",
+	log.Printf("✅ File uploaded successfully: %s (blob: %s, hash: %s) - ENCRYPTED IN B2, quota updated",
 		fileID, blobID, originalContentHash)
 
 	response := UploadResponse{
 		Success:     true,
-		Message:     "File encrypted and uploaded successfully to S3",
+		Message:     "File encrypted and uploaded successfully to B2",
 		FileID:      fileID,
 		ContentHash: originalContentHash,
 	}

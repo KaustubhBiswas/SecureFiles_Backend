@@ -18,15 +18,15 @@ import (
 // DownloadHandler handles secure file downloads.
 type DownloadHandler struct {
 	DB                *sql.DB
-	S3Service         *services.S3Service
+	StorageService    services.ObjectStorage
 	EncryptionService *services.EncryptionService
 }
 
 // NewDownloadHandler constructs a DownloadHandler.
-func NewDownloadHandler(db *sql.DB, s3Service *services.S3Service, encryptionService *services.EncryptionService) *DownloadHandler {
+func NewDownloadHandler(db *sql.DB, storageService services.ObjectStorage, encryptionService *services.EncryptionService) *DownloadHandler {
 	return &DownloadHandler{
 		DB:                db,
-		S3Service:         s3Service,
+		StorageService:    storageService,
 		EncryptionService: encryptionService,
 	}
 }
@@ -95,13 +95,13 @@ func (h *DownloadHandler) HandleFileDownload(w http.ResponseWriter, r *http.Requ
 		ContentHash      string
 		SizeBytes        int64
 		MimeType         string
-		S3Key            string
-		S3Bucket         string
+		StorageKey       string
+		StorageBucket    string
 	}
 
 	err = h.DB.QueryRow(query, fileID).Scan(
 		&file.ID, &file.Filename, &file.OriginalFilename, &file.OwnerID, &file.FileSize, &file.IsPublic,
-		&file.BlobID, &file.ContentHash, &file.SizeBytes, &file.MimeType, &file.S3Key, &file.S3Bucket,
+		&file.BlobID, &file.ContentHash, &file.SizeBytes, &file.MimeType, &file.StorageKey, &file.StorageBucket,
 	)
 
 	if err == sql.ErrNoRows {
@@ -139,8 +139,8 @@ func (h *DownloadHandler) HandleFileDownload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if h.S3Service == nil {
-		log.Printf("❌ S3 service not available")
+	if h.StorageService == nil {
+		log.Printf("❌ Storage service not available")
 		h.sendErrorResponse(w, "Storage service unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -151,11 +151,11 @@ func (h *DownloadHandler) HandleFileDownload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Download encrypted content from S3
-	log.Printf("📥 Downloading encrypted file from S3: %s", file.S3Key)
-	encryptedContent, err := h.S3Service.DownloadObject(file.S3Key)
+	// Download encrypted content from B2
+	log.Printf("📥 Downloading encrypted file from B2: %s", file.StorageKey)
+	encryptedContent, err := h.StorageService.DownloadObject(file.StorageKey)
 	if err != nil {
-		log.Printf("❌ Failed to download from S3: %v", err)
+		log.Printf("❌ Failed to download from B2: %v", err)
 		h.sendErrorResponse(w, "Failed to retrieve file", http.StatusInternalServerError)
 		return
 	}
@@ -262,7 +262,7 @@ func (h *DownloadHandler) HandlePublicFileDownload(w http.ResponseWriter, r *htt
 		Size             int64
 		MimeType         string
 		BlobID           string
-		S3Key            string
+		StorageKey       string
 		IsPublic         bool
 	}
 
@@ -276,7 +276,7 @@ func (h *DownloadHandler) HandlePublicFileDownload(w http.ResponseWriter, r *htt
 
 	err = h.DB.QueryRow(query, fileID).Scan(
 		&file.ID, &file.Filename, &file.OriginalFilename,
-		&file.Size, &file.MimeType, &file.BlobID, &file.S3Key, &file.IsPublic,
+		&file.Size, &file.MimeType, &file.BlobID, &file.StorageKey, &file.IsPublic,
 	)
 
 	if err != nil {
@@ -305,15 +305,15 @@ func (h *DownloadHandler) HandlePublicFileDownload(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Download file from S3
-	encryptedContent, err := h.S3Service.DownloadObject(file.S3Key)
+	// Download file from B2
+	encryptedContent, err := h.StorageService.DownloadObject(file.StorageKey)
 	if err != nil {
-		log.Printf("❌ Failed to download from S3: %v", err)
+		log.Printf("❌ Failed to download from B2: %v", err)
 		h.sendErrorResponse(w, "Failed to download file", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("📦 Downloaded encrypted file from S3: %s (%d bytes)", file.S3Key, len(encryptedContent))
+	log.Printf("📦 Downloaded encrypted file from B2: %s (%d bytes)", file.StorageKey, len(encryptedContent))
 
 	// Decrypt the file content
 	originalContent, err := h.EncryptionService.DecryptFile(encryptedContent)
@@ -440,17 +440,17 @@ func (h *DownloadHandler) handleRangeRequest(w http.ResponseWriter, r *http.Requ
 	ContentHash      string
 	SizeBytes        int64
 	MimeType         string
-	S3Key            string
-	S3Bucket         string
+	StorageKey       string
+	StorageBucket    string
 }, userID, fileID string) {
 	rangeHeader := r.Header.Get("Range")
 	log.Printf("📊 Processing range request: %s for file: %s", rangeHeader, file.OriginalFilename)
 
 	// Download and decrypt the full file first
 	// Note: For production, consider implementing byte-range decryption if possible
-	encryptedContent, err := h.S3Service.DownloadObject(file.S3Key)
+	encryptedContent, err := h.StorageService.DownloadObject(file.StorageKey)
 	if err != nil {
-		log.Printf("❌ Failed to download from S3: %v", err)
+		log.Printf("❌ Failed to download from B2: %v", err)
 		h.sendErrorResponse(w, "Failed to retrieve file", http.StatusInternalServerError)
 		return
 	}
@@ -508,16 +508,16 @@ func (h *DownloadHandler) handlePublicRangeRequest(w http.ResponseWriter, r *htt
 	Size             int64
 	MimeType         string
 	BlobID           string
-	S3Key            string
+	StorageKey       string
 	IsPublic         bool
 }, shareToken, fileID string) {
 	rangeHeader := r.Header.Get("Range")
 	log.Printf("📊 Processing public range request: %s for file: %s", rangeHeader, file.OriginalFilename)
 
 	// Download and decrypt the full file
-	encryptedContent, err := h.S3Service.DownloadObject(file.S3Key)
+	encryptedContent, err := h.StorageService.DownloadObject(file.StorageKey)
 	if err != nil {
-		log.Printf("❌ Failed to download from S3: %v", err)
+		log.Printf("❌ Failed to download from B2: %v", err)
 		h.sendErrorResponse(w, "Failed to retrieve file", http.StatusInternalServerError)
 		return
 	}

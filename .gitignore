@@ -68,7 +68,7 @@ files/
 *.p12
 *.pfx
 
-# AWS credentials (if any)
+# Cloud credentials (if any)
 .aws/
 credentials
 
